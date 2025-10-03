@@ -1,0 +1,22 @@
+[package]
+name = "magpkg"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+jrsonnet-evaluator = "0.5.0-pre97"
+jrsonnet-stdlib = "0.5.0-pre97"
+sha2 = "0.10"
+thiserror = "1.0"
+fs2 = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+tar = "0.4"
+zstd = "0.13"
+flate2 = "1.0"
+filetime = "0.2"
+num_cpus = "1.16"
+librqbit = { version = "8.1.1", default-features = false, features = ["rust-tls"] }
+tokio = { version = "1.39", features = ["rt-multi-thread", "macros", "time", "signal"] }
+hex = "0.4"
+jrsonnet-gcmodule = "0.3.10"
