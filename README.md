@@ -2,16 +2,18 @@
 
 Magnet Linux is a package manager and package tree for Linux that is resilient, simple and secure. 
 
-It might be for you if...
+If you ever...
 
+- Wanted to share software environments with your friends or coworkers.
+- Worried if you can keep your software stack working years or decades from now.
 - Are an early adopter and accept it might have rough edges or lose support (Though you can fork it!).
-- You ever wanted to share software environments with your friends or coworkers.
-- You are worried if you can keep your software working years or decades from now.
+
+Then it might be right for you!
 
 
 ## Why a new package manager?
 
-- [Nix](https://github.com/NixOS/nixpkgs) and [Guix](https://guix.gnu.org/) have a lot of cool ideas, but are maybe over-engineered.
+- [Nix](https://github.com/NixOS/nixpkgs) and [Guix](https://guix.gnu.org/) have a lot of cool ideas, but are very complex.
 - Software supply chain security and reliability is a growing concern.
 - Automation of packaging using AI is now possible so it seemed like a good time to try.
 
@@ -21,7 +23,7 @@ It might be for you if...
 - **Decentralized and reliable**: Release source code is mirrored on p2p networks (BitTorrent for now) with no reliance on central project infrastructure.
 - **Dev shells**: Spin up project specific environments as easily as `python -m venv` or `nix-shell`.
 - **OCI & containers**: Export any package as an OCI image ready for Docker/Podman, or layer Magnet Linux tooling into your existing pipelines.
-- **Simplicity**: No system rebuilds—install the binary, point it at a manifest, and get consistent toolchains on Fedora, Debian, Arch, or inside Kubernetes.
+- **Simplicity**: Packages are simply tarballs that can be unpacked and looked at.
 
 ## Project Principles
 
@@ -31,8 +33,8 @@ It might be for you if...
 
 ## How it works
 
-- Packages are defined as simple Jsonnet definitions.
-- Each package's build definition is hashed, giving a unique id for each variation of a package.
+- Packages are defined as simple Jsonnet definitions that form a dependency graph.
+- Each package's build definition is hashed, giving a unique id for each package (or package variable).
 - If that package id doesn't exist then the package sources are fetched, validated and built.
 - If a package is already cached, no need to rebuild from source.
 
@@ -62,5 +64,6 @@ magpkg build '(import "packages/core.jsonnet").coreutils'
 
 ## Documentation
 
+- [Bootstrapping the package tree](doc/bootstrap.md)
 - [Package store layout](doc/store-layout.md)
 - [P2P hosting guide](doc/p2p-hosting.md)
