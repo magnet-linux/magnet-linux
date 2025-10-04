@@ -17,6 +17,7 @@ use fs2::FileExt;
 use reqwest::{Url, blocking::Client};
 use sha2::{Digest, Sha256};
 use tar::{Builder, EntryType};
+use tempfile::Builder as TempDirBuilder;
 use tokio::runtime::Builder as TokioRuntimeBuilder;
 use zstd::stream::{read::Decoder as ZstdDecoder, write::Encoder as ZstdEncoder};
 
@@ -65,6 +66,13 @@ struct TorrentInfo {
 struct DownloadOutcome {
     path: PathBuf,
     torrent: Option<TorrentInfo>,
+}
+
+#[derive(Default)]
+pub struct CleanupOptions {
+    pub packages: bool,
+    pub fetched: bool,
+    pub torrents: bool,
 }
 
 impl PackageStore {
@@ -121,18 +129,20 @@ impl PackageStore {
         Ok(artifacts)
     }
 
-    pub fn cleanup(&self, expiry: Duration) -> MagResult<CleanupStats> {
+    pub fn cleanup(&self, expiry: Duration, options: CleanupOptions) -> MagResult<CleanupStats> {
         let now = SystemTime::now();
         let mut stats = CleanupStats::default();
-        self.cleanup_packages(now, expiry, &mut stats)?;
-        self.cleanup_fetches(now, expiry, &mut stats)?;
-        let seed_root = self.seed_root();
-        match btseed::try_acquire_seed_lock(&seed_root)? {
-            Some(_lock) => {
-                self.cleanup_torrents(now, expiry, &mut stats)?;
-            }
-            None => {
-                println!("Skipping torrent cleanup; seeder appears to be running.");
+        self.cleanup_packages(now, expiry, &mut stats, options.packages)?;
+        self.cleanup_fetches(now, expiry, &mut stats, options.fetched)?;
+        if options.torrents {
+            let seed_root = self.seed_root();
+            match btseed::try_acquire_seed_lock(&seed_root)? {
+                Some(_lock) => {
+                    self.cleanup_torrents(now, expiry, &mut stats)?;
+                }
+                None => {
+                    println!("Skipping torrent cleanup; seeder appears to be running.");
+                }
             }
         }
         Ok(stats)
@@ -167,7 +177,7 @@ impl PackageStore {
             }
 
             let base = package_base_name(pkg.as_ref());
-            println!("fetching sources for {base}...");
+            eprintln!("fetching sources for {base}...");
             for fetch in &pkg.fetch {
                 self.cache_fetch(fetch)?;
             }
@@ -222,7 +232,7 @@ impl PackageStore {
             return Ok(artifact_path);
         }
 
-        println!("building {base}...");
+        eprintln!("building {base}...");
 
         let build_root = self.store_root.join(format!("{base}.build"));
         if build_root.exists() {
@@ -288,6 +298,7 @@ impl PackageStore {
         now: SystemTime,
         expiry: Duration,
         stats: &mut CleanupStats,
+        remove_artifacts: bool,
     ) -> MagResult<()> {
         let mut bases = HashSet::new();
         for entry in fs::read_dir(&self.store_root)? {
@@ -316,8 +327,10 @@ impl PackageStore {
             }
 
             let artifact_path = self.store_root.join(format!("{base}.tar.zst"));
-            if remove_path_if_expired(&artifact_path, now, expiry)? {
-                stats.package_artifacts_removed += 1;
+            if remove_artifacts {
+                if remove_path_if_expired(&artifact_path, now, expiry)? {
+                    stats.package_artifacts_removed += 1;
+                }
             }
 
             let build_path = self.store_root.join(format!("{base}.build"));
@@ -384,6 +397,7 @@ impl PackageStore {
         now: SystemTime,
         expiry: Duration,
         stats: &mut CleanupStats,
+        remove_files: bool,
     ) -> MagResult<()> {
         #[derive(Default)]
         struct FetchGroup {
@@ -495,13 +509,15 @@ impl PackageStore {
 
             let mut file_exists = false;
             if let Some(file_path) = &group.file {
-                if is_path_expired(file_path, now, expiry)? {
+                let expired = is_path_expired(file_path, now, expiry)?;
+                if remove_files && expired {
                     match fs::remove_file(file_path) {
                         Ok(()) => stats.fetch_files_removed += 1,
                         Err(err) if err.kind() == ErrorKind::NotFound => {}
                         Err(err) => return Err(err.into()),
                     }
-                } else if file_path.exists() {
+                }
+                if file_path.exists() {
                     file_exists = true;
                 }
             }
@@ -689,7 +705,7 @@ impl PackageStore {
     fn cache_fetch_locked(&self, fetch: &FetchResource, dest: &Path) -> MagResult<PathBuf> {
         if dest.exists() {
             if verify_sha256(dest, &fetch.sha256)? {
-                println!("fetch cache hit: {} ({})", fetch.filename, fetch.sha256);
+                eprintln!("fetch cache hit: {} ({})", fetch.filename, fetch.sha256);
                 touch_path(dest)?;
                 self.refresh_torrent_artifacts(fetch, dest)?;
                 return Ok(dest.to_path_buf());
@@ -719,7 +735,7 @@ impl PackageStore {
         let mut last_err: Option<MagError> = None;
 
         for url in prioritized_urls {
-            println!("fetching {} from {}", fetch.filename, url);
+            eprintln!("fetching {} from {}", fetch.filename, url);
             let outcome = self.fetch_url(fetch, url, dest);
 
             match outcome {
@@ -744,7 +760,7 @@ impl PackageStore {
                     fs::rename(&tmp_path, dest)?;
                     File::open(dest)?.sync_all()?;
                     let final_path = dest.to_path_buf();
-                    println!("fetch complete: {} ({})", fetch.filename, fetch.sha256);
+                    eprintln!("fetch complete: {} ({})", fetch.filename, fetch.sha256);
                     touch_path(&final_path)?;
 
                     let torrent_info = match download.torrent.take() {
@@ -963,6 +979,40 @@ impl PackageStore {
     pub fn package_artifact_path(&self, package: &Package) -> PathBuf {
         self.store_root
             .join(format!("{}.tar.zst", package_base_name(package)))
+    }
+
+    pub fn export_runtime_closure_tarball<W: Write>(
+        &self,
+        packages: &[Rc<Package>],
+        writer: &mut W,
+    ) -> MagResult<()> {
+        let mut visited = HashSet::new();
+        let mut order = Vec::new();
+        for pkg in packages {
+            collect_runtime_closure(pkg.clone(), &mut visited, &mut order);
+        }
+
+        let temp_dir = TempDirBuilder::new().prefix("magpkg-export-").tempdir()?;
+
+        for package in order {
+            let artifact = self.package_artifact_path(package.as_ref());
+            if !artifact.exists() {
+                return Err(MagError::Generic(format!(
+                    "missing artifact for package {}",
+                    package.hash
+                )));
+            }
+            extract_tar_zst(&artifact, temp_dir.path())?;
+        }
+
+        {
+            let mut builder = Builder::new(&mut *writer);
+            builder.follow_symlinks(false);
+            builder.append_dir_all(".", temp_dir.path())?;
+            builder.finish()?;
+        }
+        writer.flush()?;
+        Ok(())
     }
 }
 
@@ -1471,24 +1521,24 @@ fn print_download_status(label: &str, transferred: u64, total: Option<u64>) {
     match total {
         Some(total) if total > 0 => {
             let percent = (transferred as f64 / total as f64 * 100.0).min(100.0);
-            println!(
+            eprintln!(
                 "downloading {label}: {} / {} ({percent:.1}%)",
                 format_bytes(transferred),
                 format_bytes(total)
             );
         }
-        _ => println!("downloading {label}: {}", format_bytes(transferred)),
+        _ => eprintln!("downloading {label}: {}", format_bytes(transferred)),
     }
 }
 
 fn print_download_complete(label: &str, transferred: u64, total: Option<u64>) {
     match total {
-        Some(total) if total > 0 => println!(
+        Some(total) if total > 0 => eprintln!(
             "downloading {label}: complete ({} / {})",
             format_bytes(transferred),
             format_bytes(total)
         ),
-        _ => println!(
+        _ => eprintln!(
             "downloading {label}: complete ({})",
             format_bytes(transferred)
         ),
@@ -1508,6 +1558,22 @@ fn format_bytes(bytes: u64) -> String {
     } else {
         format!("{value:.1} {}", UNITS[unit_index])
     }
+}
+
+fn collect_runtime_closure(
+    pkg: Rc<Package>,
+    visited: &mut HashSet<String>,
+    order: &mut Vec<Rc<Package>>,
+) {
+    if !visited.insert(pkg.hash.clone()) {
+        return;
+    }
+
+    for dep in &pkg.run_deps {
+        collect_runtime_closure(dep.clone(), visited, order);
+    }
+
+    order.push(pkg);
 }
 
 fn collect_closure(pkg: Rc<Package>, visited: &mut HashSet<String>, order: &mut Vec<Rc<Package>>) {

@@ -1,4 +1,10 @@
-use std::{collections::HashSet, time::Duration};
+use std::{
+    collections::HashSet,
+    fs::File,
+    io,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use clap::{Args, Parser, Subcommand};
 use jrsonnet_evaluator::error::Error as JrError;
@@ -35,6 +41,7 @@ fn try_main() -> MagResult<()> {
         Commands::Fetch(args) => run_fetch(args),
         Commands::Cleanup(args) => run_cleanup(args),
         Commands::Seed(args) => run_seed(args),
+        Commands::ExportTarball(args) => run_export_tarball(args),
     }
 }
 
@@ -59,6 +66,8 @@ enum Commands {
     Cleanup(CleanupArgs),
     /// Seed cached torrents so peers can download sources from this machine.
     Seed(SeedArgs),
+    /// Export the runtime closure of packages as a tarball.
+    ExportTarball(ExportTarballArgs),
 }
 
 #[derive(Args)]
@@ -84,6 +93,18 @@ struct CleanupArgs {
     /// Remove store entries older than this many days.
     #[arg(long, default_value_t = 30)]
     max_age_days: u64,
+    /// Remove expired package tarballs along with temp build directories.
+    #[arg(long)]
+    packages: bool,
+    /// Remove expired cached fetch payloads (content-addressed files).
+    #[arg(long)]
+    fetched: bool,
+    /// Remove expired torrent payload copies and metadata.
+    #[arg(long)]
+    torrents: bool,
+    /// Enable all cleanup categories (packages, fetched, torrents).
+    #[arg(long)]
+    all: bool,
 }
 
 #[derive(Args)]
@@ -97,6 +118,18 @@ struct SeedArgs {
     /// Run the seeder without opening an inbound TCP port.
     #[arg(long, conflicts_with = "listen_port")]
     no_listen: bool,
+}
+
+#[derive(Args)]
+struct ExportTarballArgs {
+    /// Jsonnet expression to evaluate into packages.
+    expression: String,
+    /// Write the tarball to this path instead of stdout. Use '-' for stdout.
+    #[arg(short, long, value_name = "PATH")]
+    output: Option<PathBuf>,
+    /// Parallelism to pass to package build scripts via BUILD_PARALLELISM.
+    #[arg(long, default_value_t = default_parallelism())]
+    parallelism: usize,
 }
 
 #[derive(Debug, Error)]
@@ -168,7 +201,12 @@ fn run_cleanup(args: CleanupArgs) -> MagResult<()> {
     let store = PackageStore::new()?;
     let seconds_per_day = 24 * 60 * 60;
     let expiry = Duration::from_secs(args.max_age_days.saturating_mul(seconds_per_day));
-    let stats = store.cleanup(expiry)?;
+    let options = store::CleanupOptions {
+        packages: args.all || args.packages,
+        fetched: args.all || args.fetched,
+        torrents: args.all || args.torrents,
+    };
+    let stats = store.cleanup(expiry, options)?;
 
     println!("Cleanup completed (max age: {} day(s)).", args.max_age_days);
 
@@ -209,6 +247,40 @@ fn run_seed(args: SeedArgs) -> MagResult<()> {
     };
 
     seeder.run(expiry, listen_port)
+}
+
+fn run_export_tarball(args: ExportTarballArgs) -> MagResult<()> {
+    let manifest_value = evaluate_expression(&args.expression)?;
+    let mut builder = PackageGraphBuilder::default();
+    let packages = builder.packages_from_value(manifest_value)?;
+
+    let store = PackageStore::new()?;
+    store.build_packages(&packages, args.parallelism)?;
+
+    match args.output {
+        Some(ref path) if path == Path::new("-") => {
+            let stdout = io::stdout();
+            let mut handle = stdout.lock();
+            store.export_runtime_closure_tarball(&packages, &mut handle)?;
+        }
+        Some(path) => {
+            if let Some(parent) = path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent)?;
+                }
+            }
+            let file = File::create(&path)?;
+            let mut writer = io::BufWriter::new(file);
+            store.export_runtime_closure_tarball(&packages, &mut writer)?;
+        }
+        None => {
+            let stdout = io::stdout();
+            let mut handle = stdout.lock();
+            store.export_runtime_closure_tarball(&packages, &mut handle)?;
+        }
+    }
+
+    Ok(())
 }
 
 fn report_error(err: &MagError) {

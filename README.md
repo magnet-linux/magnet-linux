@@ -5,7 +5,7 @@ Magnet Linux is a package manager and package tree for Linux that is resilient, 
 If you ever...
 
 - Wanted to share software environments with your friends or coworkers.
-- Worried if you can keep your software stack working years or decades from now.
+- Worried whether you can keep your software stack working years or decades from now.
 - Are an early adopter and accept it might have rough edges or lose support (Though you can fork it!).
 
 Then it might be right for you!
@@ -55,6 +55,7 @@ magpkg build '(import "packages/core.jsonnet").coreutils'
 - [ ] Initial concept.
   - [x] Simple reproducible packages built from source.
   - [x] Easy P2P source code hosting and mirroring.
+  - [x] Export packages as tarballs for simple use.
   - [ ] Development shells inspired by nix-shell and python venv.
   - [ ] Optional self hostable precompilation caches.
 - [ ] Containers

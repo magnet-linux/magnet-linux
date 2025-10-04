@@ -20,3 +20,4 @@ librqbit = { version = "8.1.1", default-features = false, features = ["rust-tls"
 tokio = { version = "1.39", features = ["rt-multi-thread", "macros", "time", "signal"] }
 hex = "0.4"
 jrsonnet-gcmodule = "0.3.10"
+tempfile = "3.10"
