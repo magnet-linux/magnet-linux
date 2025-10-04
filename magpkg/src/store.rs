@@ -57,6 +57,13 @@ pub struct CleanupStats {
     pub torrent_session_dirs_removed: usize,
 }
 
+#[derive(Default, Clone, Copy)]
+pub struct CleanupOptions {
+    pub packages: bool,
+    pub fetched: bool,
+    pub torrents: bool,
+}
+
 struct TorrentInfo {
     info_hash: String,
     relative_path: PathBuf,
@@ -66,13 +73,6 @@ struct TorrentInfo {
 struct DownloadOutcome {
     path: PathBuf,
     torrent: Option<TorrentInfo>,
-}
-
-#[derive(Default)]
-pub struct CleanupOptions {
-    pub packages: bool,
-    pub fetched: bool,
-    pub torrents: bool,
 }
 
 impl PackageStore {
@@ -1012,6 +1012,40 @@ impl PackageStore {
             builder.finish()?;
         }
         writer.flush()?;
+        Ok(())
+    }
+
+    pub fn export_runtime_closure_rootfs(
+        &self,
+        packages: &[Rc<Package>],
+        dest: &Path,
+    ) -> MagResult<()> {
+        let mut visited = HashSet::new();
+        let mut order = Vec::new();
+        for pkg in packages {
+            collect_runtime_closure(pkg.clone(), &mut visited, &mut order);
+        }
+
+        clear_directory(dest)?;
+
+        for package in order {
+            let artifact = self.package_artifact_path(package.as_ref());
+            if !artifact.exists() {
+                return Err(MagError::Generic(format!(
+                    "missing artifact for package {}",
+                    package.hash
+                )));
+            }
+            extract_tar_zst(&artifact, dest)?;
+        }
+
+        for dir in ["home", "tmp", "proc", "dev"] {
+            let path = dest.join(dir);
+            if !path.exists() {
+                fs::create_dir_all(&path)?;
+            }
+        }
+
         Ok(())
     }
 }

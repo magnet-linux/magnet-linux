@@ -1,7 +1,8 @@
 use std::{
     collections::HashSet,
-    fs::File,
+    fs::{self, File},
     io,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -23,7 +24,7 @@ use crate::btseed::TorrentSeeder;
 use crate::errors::format_jr_error;
 use crate::imports::MagImportResolver;
 use crate::package::PackageGraphBuilder;
-use crate::store::PackageStore;
+use crate::store::{CleanupOptions, PackageStore};
 
 const DEFAULT_SEED_PORT: u16 = 6881;
 
@@ -42,6 +43,7 @@ fn try_main() -> MagResult<()> {
         Commands::Cleanup(args) => run_cleanup(args),
         Commands::Seed(args) => run_seed(args),
         Commands::ExportTarball(args) => run_export_tarball(args),
+        Commands::Venv(args) => run_venv(args),
     }
 }
 
@@ -68,6 +70,8 @@ enum Commands {
     Seed(SeedArgs),
     /// Export the runtime closure of packages as a tarball.
     ExportTarball(ExportTarballArgs),
+    /// Materialize a runtime environment and helper script for an interactive shell.
+    Venv(VenvArgs),
 }
 
 #[derive(Args)]
@@ -127,6 +131,18 @@ struct ExportTarballArgs {
     /// Write the tarball to this path instead of stdout. Use '-' for stdout.
     #[arg(short, long, value_name = "PATH")]
     output: Option<PathBuf>,
+    /// Parallelism to pass to package build scripts via BUILD_PARALLELISM.
+    #[arg(long, default_value_t = default_parallelism())]
+    parallelism: usize,
+}
+
+#[derive(Args)]
+struct VenvArgs {
+    /// Jsonnet expression to evaluate into packages.
+    expression: String,
+    /// Directory where the virtual environment should be written.
+    #[arg(short = 'o', long, value_name = "DIR")]
+    output: PathBuf,
     /// Parallelism to pass to package build scripts via BUILD_PARALLELISM.
     #[arg(long, default_value_t = default_parallelism())]
     parallelism: usize,
@@ -201,7 +217,7 @@ fn run_cleanup(args: CleanupArgs) -> MagResult<()> {
     let store = PackageStore::new()?;
     let seconds_per_day = 24 * 60 * 60;
     let expiry = Duration::from_secs(args.max_age_days.saturating_mul(seconds_per_day));
-    let options = store::CleanupOptions {
+    let options = CleanupOptions {
         packages: args.all || args.packages,
         fetched: args.all || args.fetched,
         torrents: args.all || args.torrents,
@@ -280,6 +296,72 @@ fn run_export_tarball(args: ExportTarballArgs) -> MagResult<()> {
         }
     }
 
+    Ok(())
+}
+
+fn run_venv(args: VenvArgs) -> MagResult<()> {
+    let manifest_value = evaluate_expression(&args.expression)?;
+    let mut builder = PackageGraphBuilder::default();
+    let packages = builder.packages_from_value(manifest_value)?;
+
+    let store = PackageStore::new()?;
+    store.build_packages(&packages, args.parallelism)?;
+
+    fs::create_dir_all(&args.output)?;
+    let rootfs_dir = args.output.join("rootfs");
+    store.export_runtime_closure_rootfs(&packages, &rootfs_dir)?;
+
+    write_venv_run_script(&args.output)?;
+
+    println!(
+        "Virtual environment created at {} (use run.sh to enter)",
+        args.output.display()
+    );
+
+    Ok(())
+}
+
+fn write_venv_run_script(dir: &Path) -> MagResult<()> {
+    let script_path = dir.join("run.sh");
+    let contents = r#"#!/bin/sh
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
+ROOTFS="$SCRIPT_DIR/rootfs"
+
+if [ ! -d "$ROOTFS" ]; then
+    echo "magpkg venv: missing rootfs at $ROOTFS" >&2
+    exit 1
+fi
+
+HOST_CWD="$(pwd)"
+TARGET_DIR="$HOST_CWD"
+case "$TARGET_DIR" in
+    /home/*|/tmp/*) ;;
+    *) TARGET_DIR="/" ;;
+esac
+
+if [ "$#" -eq 0 ]; then
+    set -- /bin/sh
+fi
+
+exec bwrap \
+    --bind "$ROOTFS" / \
+    --dev-bind /dev /dev \
+    --proc /proc \
+    --tmpfs /run \
+    --bind /home /home \
+    --bind /tmp /tmp \
+    --setenv PATH "${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" \
+    --setenv HOME "${HOME:-/root}" \
+    --chdir "$TARGET_DIR" \
+    "$@"
+"#;
+
+    fs::write(&script_path, contents)?;
+    let mut perms = fs::metadata(&script_path)?.permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&script_path, perms)?;
     Ok(())
 }
 
