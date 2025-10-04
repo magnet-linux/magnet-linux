@@ -174,15 +174,13 @@ fn run_cleanup(args: CleanupArgs) -> MagResult<()> {
 
     if stats.package_artifacts_removed
         + stats.package_build_dirs_removed
-        + stats.package_tmp_dirs_removed
         + stats.package_lock_files_removed
         > 0
     {
         println!(
-            "  Package artifacts removed: {}, build dirs: {}, tmp dirs: {}, lock files: {}",
+            "  Package artifacts removed: {}, build dirs: {}, lock files: {}",
             stats.package_artifacts_removed,
             stats.package_build_dirs_removed,
-            stats.package_tmp_dirs_removed,
             stats.package_lock_files_removed
         );
     }

@@ -47,7 +47,6 @@ pub struct PackageStore {
 pub struct CleanupStats {
     pub package_artifacts_removed: usize,
     pub package_build_dirs_removed: usize,
-    pub package_tmp_dirs_removed: usize,
     pub package_lock_files_removed: usize,
     pub fetch_files_removed: usize,
     pub fetch_partials_removed: usize,
@@ -327,13 +326,8 @@ impl PackageStore {
                 stats.package_build_dirs_removed += 1;
             }
 
-            let tmp_path = self.store_root.join(format!("{base}.tmp"));
-            if remove_path_if_expired(&tmp_path, now, expiry)? {
-                stats.package_tmp_dirs_removed += 1;
-            }
-
             let mut remove_lock = false;
-            if !artifact_path.exists() && !build_path.exists() && !tmp_path.exists() {
+            if !artifact_path.exists() && !build_path.exists() {
                 if is_path_expired(&lock_path, now, expiry)? {
                     remove_lock = true;
                 }
@@ -1413,7 +1407,7 @@ fn clear_directory(path: &Path) -> io::Result<()> {
 }
 
 fn package_base_from_entry(name: &str) -> Option<String> {
-    for suffix in [".tar.zst", ".build", ".tmp", ".lock"] {
+    for suffix in [".tar.zst", ".build", ".lock"] {
         if name.ends_with(suffix) {
             return Some(name.trim_end_matches(suffix).to_string());
         }

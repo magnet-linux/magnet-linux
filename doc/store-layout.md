@@ -6,13 +6,11 @@
   - `${name-or-hash}.tar.zst`: final content-addressed package archives.
   - `${name-or-hash}.lock`: lock files used while a package is being built or touched.
   - `${name-or-hash}.build/`: ephemeral build chroot populated for the current build.
-  - `${name-or-hash}.tmp/`: temporary scratch space for failed or in-progress builds.
 - `fetch/`
   - `${sha256}`: cached source artifact named by its checksum.
   - `${sha256}.lock`: per-source lock guards fetch/download work.
   - `${sha256}.tmp`: temporary download target before checksum verification.
-  - `${sha256}.torrent-work-*/`: transient directories created by the torrent fetcher.
-  - `.torrent-session-*/`: active librqbit session state; removed once idle.
+  - `.torrent-session-*/`: active librqbit session state (each contains a `downloads/` directory with `${sha256}.torrent-work-*` scratch space while a torrent fetch is running).
 - `torrent/`
   - `<info-hash>/resource.torrent`: generated or cached `.torrent` metadata.
   - `<info-hash>/<relative-path>`: seed copy of the fetched payload.
