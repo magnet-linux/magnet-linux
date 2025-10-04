@@ -1,6 +1,6 @@
 # P2P Hosting Basics
 
-Magnet Linux stores every fetched source in `~/.magpkg/fetch/` and records matching torrent metadata under `~/.magpkg/torrent/<info-hash>/resource.torrent`. Seeding those files keeps the ecosystem fast even when origin mirrors disappear.
+Magnet Linux stores every fetched source in `~/.magpkg/fetch/` and records matching torrent metadata under `~/.magpkg/torrent/<info-hash>/resource.torrent`. Seeding those files keeps the ecosystem fast even when origin mirrors disappear. Torrents only come into play when a package definition lists one of their magnet URLs or `.torrent` files in its `fetch.urls`; adding a new magnet link to the manifest immediately lets other builders reuse your seeded payload.
 
 ## Built-in Seeder
 - Fetch or build something once, e.g. `magpkg build 'import "packages/core.jsonnet"'`.

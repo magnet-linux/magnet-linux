@@ -32,8 +32,8 @@ It might be for you if...
 ## How it works
 
 - Packages are defined as simple Jsonnet definitions.
-- Each package's build definitions are hashed, giving a unique id for each variation of a package.
-- Package sources are fetched from URLs or over BitTorrent, validated and then the package can be built.
+- Each package's build definition is hashed, giving a unique id for each variation of a package.
+- If that package id doesn't exist then the package sources are fetched, validated and built.
 - If a package is already cached, no need to rebuild from source.
 
 ## Try It
