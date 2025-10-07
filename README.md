@@ -21,7 +21,7 @@ Then it might be right for you!
 
 - **Reproducible and auditable**: Package definitions are deterministic, reproducible and easily cached.
 - **Decentralized and reliable**: Release source code is mirrored on p2p networks (BitTorrent for now) with no reliance on central project infrastructure.
-- **Dev shells**: Spin up project specific environments as easily as `python -m venv` or `nix-shell`.
+- **On-demand venvs**: Spin up project specific environments as easily as `python -m venv` or `nix-shell`.
 - **OCI & containers**: Export any package as an OCI image ready for Docker/Podman, or layer Magnet Linux tooling into your existing pipelines.
 - **Simplicity**: Packages are simply tarballs that can be unpacked and looked at.
 
@@ -47,7 +47,10 @@ You will need:
 
 ```bash
 # Evaluate a manifest, fetch sources via P2P/HTTP, and build artifacts
-magpkg build '(import "packages/core.jsonnet").coreutils'
+magpkg build -e '(import "packages/core.jsonnet").coreutils'
+
+# Launch a cached virtual environment described by a Jsonnet manifest
+magpkg venv -e '(import "magpkg/examples/core-venv.jsonnet")'
 ```
 
 ## Status and Roadmap
@@ -56,15 +59,30 @@ magpkg build '(import "packages/core.jsonnet").coreutils'
   - [x] Simple reproducible packages built from source.
   - [x] Easy P2P source code hosting and mirroring.
   - [x] Export packages as tarballs for simple use.
-  - [ ] Development shells inspired by nix-shell and python venv.
+  - [ ] Development venvs inspired by nix-shell and python venv.
   - [ ] Optional self hostable precompilation caches.
 - [ ] Containers
   - [ ] Export OCI and Docker containers from a simple manifest.
 - [ ] Magnet Linux Distro!!!??
   - [ ] A full-blown distro that used magpkg as its package manager.
 
+## Virtual Environments
+
+`magpkg venv` evaluates a Jsonnet manifest, materializes its root filesystem under `~/.magpkg/venv/<hash>/rootfs`, and then launches Bubblewrap with a read-only bind of that cache plus a set of mounts you control.  The command accepts the same `--expression` flag used by `build`, along with `--parallelism` for preparing packages and an optional trailing command (defaulting to `/bin/sh`).
+
+Key manifest sections:
+
+- `packages`: Array of package references whose runtime closures will populate the venv rootfs.
+- `envKeep` / `envSet`: Environment variables to inherit or override when the venv starts. `PATH` and `LD_LIBRARY_PATH` default to standard locations if unset.
+- `mountDefaults`: Toggle that keeps `/dev`, `/proc`, `/sys`, `/etc/resolv.conf`, `/etc/hosts`, and `/tmp` mounted from the host. Set it to `false` for a fully curated list.
+- `mounts`: Either shorthand strings (e.g. `"/home"` for a rw-bind) or objects that describe additional bubblewrap mounts.
+- `fsEntries`: Directories, files, or symlinks to create inside the cached rootfs; they contribute to the venv hash.
+
+See [doc/venv.md](doc/venv.md) for a deeper walkthrough and advanced configuration examples.
+
 ## Documentation
 
 - [Bootstrapping the package tree](doc/bootstrap.md)
 - [Package store layout](doc/store-layout.md)
+- [Virtual environments](doc/venv.md)
 - [P2P hosting guide](doc/p2p-hosting.md)

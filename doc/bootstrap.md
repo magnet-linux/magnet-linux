@@ -19,6 +19,6 @@ Magnet Linux needs a ready-made root filesystem before `magpkg` can build anythi
 `magpkg` inflates every dependency under `pkgs/<hash>.build/rootfs/` and runs the package’s shell script inside Bubblewrap, so later stages always see the binaries produced earlier in the chain.
 
 ## Updating the bootstrap tarball
-1. Run `magpkg build 'std.objectValues(import "packages/bootstrap.jsonnet")'` to rebuild all four packages; `bootstrap_out` emits the new rootfs archive in `~/.magpkg/pkgs/`.
+1. Run `magpkg build -e 'std.objectValues(import "packages/bootstrap.jsonnet")'` to rebuild all four packages; `bootstrap_out` emits the new rootfs archive in `~/.magpkg/pkgs/`.
 2. Publish the tarball (HTTP and torrent/magnet), compute its SHA-256, and update the `bootstrap-rootfs` fetch stanza.
 3. Commit the new hash and any refreshed torrent metadata. Downstream builders now bootstrap entirely from source-defined artifacts.

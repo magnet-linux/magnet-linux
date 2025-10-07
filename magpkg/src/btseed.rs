@@ -5,11 +5,10 @@ use std::{
     path::{Path, PathBuf},
     str,
     sync::Arc,
-    time::{Duration, SystemTime},
 };
 
 use fs2::FileExt;
-use librqbit::dht::{Id20, PersistentDhtConfig};
+use librqbit::dht::Id20;
 use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, ByteBufOwned, ManagedTorrent, ParsedTorrent,
     Session, SessionOptions, torrent_from_bytes_ext,
@@ -20,9 +19,11 @@ use tokio::time::{Duration as TokioDuration, interval};
 
 use crate::{MagError, MagResult};
 
+pub const SEED_LOCK_FILE: &str = "seed.lock";
+
 pub struct TorrentSeeder {
     torrent_root: PathBuf,
-    seed_root: PathBuf,
+    lock_path: PathBuf,
 }
 
 pub struct SeedLock {
@@ -38,7 +39,6 @@ pub struct TorrentSeedInfo {
 struct ActiveSeed {
     handle: Arc<ManagedTorrent>,
     display_name: String,
-    torrent_dir: PathBuf,
 }
 
 struct SeedPlan {
@@ -49,7 +49,7 @@ struct SeedPlan {
 }
 
 impl TorrentSeeder {
-    pub fn new(watch_dir: impl Into<PathBuf>, state_dir: impl Into<PathBuf>) -> MagResult<Self> {
+    pub fn new(watch_dir: impl Into<PathBuf>) -> MagResult<Self> {
         let torrent_root = watch_dir.into();
         if torrent_root.as_os_str().is_empty() {
             return Err(MagError::Generic(
@@ -59,26 +59,17 @@ impl TorrentSeeder {
 
         fs::create_dir_all(&torrent_root)?;
 
-        let seed_root = state_dir.into();
-        if seed_root.as_os_str().is_empty() {
-            return Err(MagError::Generic(
-                "torrent seeder requires a state directory".into(),
-            ));
-        }
-        fs::create_dir_all(&seed_root)?;
+        let lock_path = seed_lock_path(&torrent_root);
 
         Ok(Self {
             torrent_root,
-            seed_root,
+            lock_path,
         })
     }
 
-    pub fn run(&self, expiry: Duration, listen_port: Option<u16>) -> MagResult<()> {
-        let lock = acquire_seed_lock(&self.seed_root)?;
-        println!(
-            "seeder lock acquired at {}",
-            self.seed_root.join("seeder.lock").display()
-        );
+    pub fn run(&self, listen_port: Option<u16>) -> MagResult<()> {
+        let lock = acquire_seed_lock(&self.lock_path)?;
+        println!("seeder lock acquired at {}", self.lock_path.display());
 
         let runtime = TokioRuntimeBuilder::new_multi_thread()
             .worker_threads(2)
@@ -86,18 +77,14 @@ impl TorrentSeeder {
             .build()
             .map_err(|err| MagError::Generic(format!("failed to build tokio runtime: {err}")))?;
 
-        let result = runtime.block_on(self.run_seed_loop(expiry, listen_port));
+        let result = runtime.block_on(self.run_seed_loop(listen_port));
 
         drop(lock);
         result
     }
 
-    async fn run_seed_loop(&self, expiry: Duration, listen_port: Option<u16>) -> MagResult<()> {
+    async fn run_seed_loop(&self, listen_port: Option<u16>) -> MagResult<()> {
         let mut session_opts = SessionOptions::default();
-        session_opts.dht_config = Some(PersistentDhtConfig {
-            dump_interval: Some(Duration::from_secs(60)),
-            config_filename: Some(self.seed_root.join("dht.json")),
-        });
 
         if let Some(port) = listen_port {
             if port == u16::MAX {
@@ -122,10 +109,7 @@ impl TorrentSeeder {
         println!("torrent seeder started; press Ctrl+C to stop");
 
         let mut active: HashMap<String, ActiveSeed> = HashMap::new();
-        if let Err(err) = self
-            .sync_seeding_iteration(&session, &mut active, expiry)
-            .await
-        {
+        if let Err(err) = self.sync_seeding_iteration(&session, &mut active).await {
             println!("initial seeding scan error: {err:#}");
         }
 
@@ -137,7 +121,7 @@ impl TorrentSeeder {
                     break;
                 }
                 _ = ticker.tick() => {
-                    if let Err(err) = self.sync_seeding_iteration(&session, &mut active, expiry).await {
+                    if let Err(err) = self.sync_seeding_iteration(&session, &mut active).await {
                         println!("seeding loop error: {err:#}");
                     }
                 }
@@ -162,41 +146,18 @@ impl TorrentSeeder {
         &self,
         session: &Arc<Session>,
         active: &mut HashMap<String, ActiveSeed>,
-        expiry: Duration,
     ) -> MagResult<()> {
-        let now = SystemTime::now();
-        let (plans, warnings, expired_dirs) =
-            scan_torrent_directory(self.torrent_root.clone(), now, expiry)?;
+        let (plans, warnings) = scan_torrent_directory(self.torrent_root.clone())?;
 
         for warning in warnings {
             println!("seeder: {warning}");
         }
 
         let seen: HashSet<String> = plans.iter().map(|p| p.info_hash.clone()).collect();
-        let expired_set: HashSet<PathBuf> = expired_dirs.into_iter().collect();
-
-        for dir in &expired_set {
-            if !active
-                .values()
-                .any(|seed| seed.torrent_dir.as_path() == dir.as_path())
-            {
-                match fs::remove_dir_all(dir) {
-                    Ok(()) => println!("seeder: removed expired torrent dir {}", dir.display()),
-                    Err(err) if err.kind() == ErrorKind::NotFound => {}
-                    Err(err) => println!(
-                        "seeder: failed to remove expired torrent dir {}: {err:#}",
-                        dir.display()
-                    ),
-                }
-            }
-        }
 
         let mut to_remove = Vec::new();
-        for (info_hash, active_seed) in active.iter() {
+        for info_hash in active.keys() {
             if !seen.contains(info_hash) {
-                to_remove.push(info_hash.clone());
-            }
-            if expired_set.contains(&active_seed.torrent_dir) {
                 to_remove.push(info_hash.clone());
             }
         }
@@ -209,19 +170,6 @@ impl TorrentSeeder {
                 );
                 if let Err(err) = session.pause(&active_seed.handle).await {
                     println!("warning: failed to pause torrent {info_hash}: {err:#}");
-                }
-                if expired_set.contains(&active_seed.torrent_dir) {
-                    match fs::remove_dir_all(&active_seed.torrent_dir) {
-                        Ok(()) => println!(
-                            "seeder: cleaned expired torrent dir {}",
-                            active_seed.torrent_dir.display()
-                        ),
-                        Err(err) if err.kind() == ErrorKind::NotFound => {}
-                        Err(err) => println!(
-                            "seeder: failed to remove expired torrent dir {}: {err:#}",
-                            active_seed.torrent_dir.display()
-                        ),
-                    }
                 }
             }
         }
@@ -261,7 +209,6 @@ impl TorrentSeeder {
                         ActiveSeed {
                             handle,
                             display_name,
-                            torrent_dir,
                         },
                     );
                 }
@@ -282,10 +229,17 @@ impl TorrentSeeder {
     }
 }
 
-pub fn try_acquire_seed_lock(seed_root: &Path) -> MagResult<Option<SeedLock>> {
-    fs::create_dir_all(seed_root)?;
-    let lock_path = seed_root.join("seeder.lock");
-    let lock_file = File::create(&lock_path)?;
+pub fn seed_lock_path(torrent_root: &Path) -> PathBuf {
+    torrent_root.join(SEED_LOCK_FILE)
+}
+
+pub fn try_acquire_seed_lock(lock_path: &Path) -> MagResult<Option<SeedLock>> {
+    if let Some(parent) = lock_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let lock_file = File::create(lock_path)?;
     match lock_file.try_lock_exclusive() {
         Ok(()) => Ok(Some(SeedLock { _file: lock_file })),
         Err(err) if err.kind() == ErrorKind::WouldBlock => Ok(None),
@@ -293,10 +247,13 @@ pub fn try_acquire_seed_lock(seed_root: &Path) -> MagResult<Option<SeedLock>> {
     }
 }
 
-fn acquire_seed_lock(seed_root: &Path) -> MagResult<SeedLock> {
-    fs::create_dir_all(seed_root)?;
-    let lock_path = seed_root.join("seeder.lock");
-    let lock_file = File::create(&lock_path)?;
+fn acquire_seed_lock(lock_path: &Path) -> MagResult<SeedLock> {
+    if let Some(parent) = lock_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let lock_file = File::create(lock_path)?;
     lock_file.lock_exclusive()?;
     Ok(SeedLock { _file: lock_file })
 }
@@ -358,14 +315,9 @@ pub fn load_torrent_seed_info(torrent_path: &Path) -> MagResult<TorrentSeedInfo>
     })
 }
 
-fn scan_torrent_directory(
-    torrent_root: PathBuf,
-    now: SystemTime,
-    expiry: Duration,
-) -> MagResult<(Vec<SeedPlan>, Vec<String>, Vec<PathBuf>)> {
+fn scan_torrent_directory(torrent_root: PathBuf) -> MagResult<(Vec<SeedPlan>, Vec<String>)> {
     let mut plans = Vec::new();
     let mut warnings = Vec::new();
-    let mut expired_dirs = Vec::new();
 
     for entry in fs::read_dir(&torrent_root)? {
         let entry = entry?;
@@ -376,13 +328,6 @@ fn scan_torrent_directory(
         let dir_path = entry.path();
         let torrent_path = dir_path.join("resource.torrent");
         if !torrent_path.exists() {
-            continue;
-        }
-
-        let metadata = fs::metadata(&torrent_path)?;
-        if is_metadata_expired(&metadata, now, expiry) {
-            warnings.push(format!("skipping expired torrent {}", dir_path.display()));
-            expired_dirs.push(dir_path.clone());
             continue;
         }
 
@@ -416,21 +361,11 @@ fn scan_torrent_directory(
         });
     }
 
-    Ok((plans, warnings, expired_dirs))
+    Ok((plans, warnings))
 }
 
 fn info_hash_to_hex(id: Id20) -> String {
     hex::encode(id.0)
-}
-
-fn is_metadata_expired(metadata: &fs::Metadata, now: SystemTime, expiry: Duration) -> bool {
-    match metadata.modified() {
-        Ok(modified) => match now.duration_since(modified) {
-            Ok(age) => age > expiry,
-            Err(_) => false,
-        },
-        Err(_) => false,
-    }
 }
 
 impl Drop for SeedLock {

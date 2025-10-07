@@ -14,8 +14,9 @@
 - `torrent/`
   - `<info-hash>/resource.torrent`: generated or cached `.torrent` metadata.
   - `<info-hash>/<relative-path>`: seed copy of the fetched payload.
-- `seed/`
-  - `seeder.lock`: mutex for the long-running torrent seeder.
-  - `dht.json`: persisted Distributed Hash Table state for faster restarts.
+  - `seed.lock`: mutex for the long-running torrent seeder.
+- `venv/`
+  - `<hash>/rootfs/`: cached virtual environment root filesystem produced by `magpkg venv`.
+  - `<hash>/rootfs/.lock`: advisory lock preventing cleanup while an environment is running.
 
 During a build, dependencies are unpacked beneath `pkgs/${base}.build/rootfs`, output files land in `rootfs/out`, and the finished tree is repacked into `pkgs/${base}.tar.zst`. Fetch, build, cleanup, and seeding commands coordinate exclusively via these files, so you can inspect or back up the store safely.

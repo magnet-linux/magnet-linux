@@ -84,6 +84,14 @@ impl PackageGraphBuilder {
             let build_script = read_build_script(&obj)?;
             let fetch = read_fetch_list(&obj)?;
 
+            let build_is_empty = build_script.trim().is_empty();
+            if build_is_empty && fetch.is_empty() && run_deps.is_empty() && build_deps.is_empty() {
+                return Err(MagError::Generic(
+                    "package definition must declare a build script, fetch entry, or dependencies"
+                        .into(),
+                ));
+            }
+
             let hash = compute_hash(&build_script, &fetch, &run_deps, &build_deps);
 
             if let Some(existing) = self.by_hash.get(&hash) {

@@ -27,7 +27,7 @@ use crate::{
         TORRENT_FETCHER_LOCK, TORRENT_SESSION_PREFIX, TORRENT_WORK_MARKER, TorrentDownloadRequest,
         TorrentFetcher,
     },
-    btseed::{self, TorrentSeedInfo, load_torrent_seed_info},
+    btseed::{self, TorrentSeedInfo, load_torrent_seed_info, seed_lock_path},
     package::{FetchResource, Package},
 };
 
@@ -37,10 +37,10 @@ use librqbit::{CreateTorrentOptions, Magnet, create_torrent};
 const FETCH_LOCK_SUFFIX: &str = ".lock";
 pub struct PackageStore {
     client: Client,
-    base_root: PathBuf,
     store_root: PathBuf,
     fetch_root: PathBuf,
     torrent_root: PathBuf,
+    venv_root: PathBuf,
     torrent_fetcher: Mutex<Option<Arc<TorrentFetcher>>>,
 }
 
@@ -55,6 +55,7 @@ pub struct CleanupStats {
     pub torrent_dirs_removed: usize,
     pub torrent_work_dirs_removed: usize,
     pub torrent_session_dirs_removed: usize,
+    pub venv_rootfs_removed: usize,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -62,6 +63,7 @@ pub struct CleanupOptions {
     pub packages: bool,
     pub fetched: bool,
     pub torrents: bool,
+    pub venvs: bool,
 }
 
 struct TorrentInfo {
@@ -87,9 +89,11 @@ impl PackageStore {
         let fetch_root = base_root.join("fetch");
         let store_root = base_root.join("pkgs");
         let torrent_root = base_root.join("torrent");
+        let venv_root = base_root.join("venv");
         fs::create_dir_all(&fetch_root)?;
         fs::create_dir_all(&store_root)?;
         fs::create_dir_all(&torrent_root)?;
+        fs::create_dir_all(&venv_root)?;
 
         let user_agent = format!("magpkg/{}", env!("CARGO_PKG_VERSION"));
 
@@ -100,10 +104,10 @@ impl PackageStore {
 
         Ok(Self {
             client,
-            base_root,
             store_root,
             fetch_root,
             torrent_root,
+            venv_root,
             torrent_fetcher: Mutex::new(None),
         })
     }
@@ -134,9 +138,12 @@ impl PackageStore {
         let mut stats = CleanupStats::default();
         self.cleanup_packages(now, expiry, &mut stats, options.packages)?;
         self.cleanup_fetches(now, expiry, &mut stats, options.fetched)?;
+        if options.venvs {
+            self.cleanup_venvs(now, expiry, &mut stats)?;
+        }
         if options.torrents {
-            let seed_root = self.seed_root();
-            match btseed::try_acquire_seed_lock(&seed_root)? {
+            let lock_path = seed_lock_path(self.torrent_root());
+            match btseed::try_acquire_seed_lock(&lock_path)? {
                 Some(_lock) => {
                     self.cleanup_torrents(now, expiry, &mut stats)?;
                 }
@@ -211,8 +218,8 @@ impl PackageStore {
         Ok(())
     }
 
-    pub fn seed_root(&self) -> PathBuf {
-        self.base_root.join("seed")
+    pub fn venv_rootfs_dir(&self, hash: &str) -> PathBuf {
+        self.venv_root.join(hash)
     }
 
     pub fn torrent_root(&self) -> &Path {
@@ -629,6 +636,49 @@ impl PackageStore {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn cleanup_venvs(
+        &self,
+        now: SystemTime,
+        expiry: Duration,
+        stats: &mut CleanupStats,
+    ) -> MagResult<()> {
+        for entry in fs::read_dir(&self.venv_root)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+
+            let dir_path = entry.path();
+            let rootfs_path = dir_path.join("rootfs");
+            let lock_path = rootfs_path.join(".lock");
+
+            let mut lock_file: Option<File> = None;
+            if lock_path.exists() {
+                match File::open(&lock_path) {
+                    Ok(file) => match file.try_lock_exclusive() {
+                        Ok(()) => {
+                            lock_file = Some(file);
+                        }
+                        Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                            continue;
+                        }
+                        Err(err) => return Err(err.into()),
+                    },
+                    Err(err) if err.kind() == ErrorKind::NotFound => {}
+                    Err(err) => return Err(err.into()),
+                }
+            }
+
+            if remove_path_if_expired(&dir_path, now, expiry)? {
+                stats.venv_rootfs_removed += 1;
+            }
+
+            drop(lock_file);
+        }
+
         Ok(())
     }
 
