@@ -1,15 +1,18 @@
 # Virtual Environments
 
-`magpkg venv` builds on the package graph to give you reproducible, cached development environments.  Each invocation evaluates a Jsonnet manifest, exports the runtime closure of the requested packages into `~/.magpkg/venv/<hash>/rootfs`, and then launches [bubblewrap](https://github.com/containers/bubblewrap) with the mounts and environment variables you specify.
+`magpkg venv` builds on the package graph to give you reproducible, cached development environments.  Each invocation evaluates a Jsonnet manifest, exports the runtime closure of the requested packages into `~/.magpkg/venv/<hash>/rootfs`, and then launches an isolated container with the mounts and environment variables you specify.
 
 ## Quick Start
 
 ```bash
 # Launch the example environment defined in magpkg/examples/core-venv.jsonnet
-magpkg venv -e '(import "magpkg/examples/core-venv.jsonnet")'
+magpkg venv -f magpkg/examples/core-venv.jsonnet
 
 # Run a single command instead of an interactive shell
-magpkg venv -e '(import "magpkg/examples/core-venv.jsonnet")' -- git status
+magpkg venv -f magpkg/examples/core-venv.jsonnet -- git status
+
+# The --expression flag still works when you need inline Jsonnet
+magpkg venv -e '(import "magpkg/examples/core-venv.jsonnet")'
 ```
 
 The first run materializes the venv under the store; subsequent runs with the same manifest hash reuse the cached rootfs instantly.
@@ -52,6 +55,5 @@ Network-dependent tools often benefit from additional read-only binds (`/etc/ssl
 
 - Combine `envKeep` with explicit `envSet` entries to thread secrets or tokens in from the host without baking them into the cache hash.
 - Use `fsEntries` to pre-create directories like `/etc/ssl` or stub configuration files. File entries can include inline contents and POSIX modes.
+- Reach for `-f/--file` when your manifest already lives on disk; `-e/--expression` is still available for inline snippets.
 - For hermetic environments, set `mountDefaults: false` and list every required mount explicitly. Remember to include `/dev`, `/proc`, and a writable `/tmp` or tmpfs replacement.
-
-Have ideas for smoother ergonomics, such as `--file` manifests or manifest registries? Check the issue tracker or open a discussion—new options for `magpkg venv` are welcome.

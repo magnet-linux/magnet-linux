@@ -42,7 +42,7 @@ Then it might be right for you!
 
 You will need:
 
-- You will need [bwrap](https://github.com/containers/bubblewrap) preinstalled (used for package build sandboxing). 
+- You will need the magpkg container runtime available on your PATH (installing [bubblewrap](https://github.com/containers/bubblewrap) satisfies this for now).
 - A Rust compiler so you can compile magpkg (releases coming soon!).
 
 ```bash
@@ -50,7 +50,7 @@ You will need:
 magpkg build -e '(import "packages/core.jsonnet").coreutils'
 
 # Launch a cached virtual environment described by a Jsonnet manifest
-magpkg venv -e '(import "magpkg/examples/core-venv.jsonnet")'
+magpkg venv -f magpkg/examples/core-venv.jsonnet
 ```
 
 ## Status and Roadmap
@@ -68,14 +68,14 @@ magpkg venv -e '(import "magpkg/examples/core-venv.jsonnet")'
 
 ## Virtual Environments
 
-`magpkg venv` evaluates a Jsonnet manifest, materializes its root filesystem under `~/.magpkg/venv/<hash>/rootfs`, and then launches Bubblewrap with a read-only bind of that cache plus a set of mounts you control.  The command accepts the same `--expression` flag used by `build`, along with `--parallelism` for preparing packages and an optional trailing command (defaulting to `/bin/sh`).
+`magpkg venv` evaluates a Jsonnet manifest, materializes its root filesystem under `~/.magpkg/venv/<hash>/rootfs`, and then launches a container with a read-only bind of that cache plus a set of mounts you control.  The command accepts the same `--expression` flag used by `build`, or `--file/-f` as a shorthand for importing a Jsonnet file, along with `--parallelism` for preparing packages and an optional trailing command (defaulting to `/bin/sh`).
 
 Key manifest sections:
 
 - `packages`: Array of package references whose runtime closures will populate the venv rootfs.
 - `envKeep` / `envSet`: Environment variables to inherit or override when the venv starts. `PATH` and `LD_LIBRARY_PATH` default to standard locations if unset.
 - `mountDefaults`: Toggle that keeps `/dev`, `/proc`, `/sys`, `/etc/resolv.conf`, `/etc/hosts`, and `/tmp` mounted from the host. Set it to `false` for a fully curated list.
-- `mounts`: Either shorthand strings (e.g. `"/home"` for a rw-bind) or objects that describe additional bubblewrap mounts.
+- `mounts`: Either shorthand strings (e.g. `"/home"` for a rw-bind) or objects that describe additional container mounts.
 - `fsEntries`: Directories, files, or symlinks to create inside the cached rootfs; they contribute to the venv hash.
 
 See [doc/venv.md](doc/venv.md) for a deeper walkthrough and advanced configuration examples.

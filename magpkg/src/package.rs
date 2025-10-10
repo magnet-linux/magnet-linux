@@ -368,3 +368,45 @@ fn compute_hash(
     let digest = hasher.finalize();
     format!("{:x}", digest)
 }
+
+pub fn collect_runtime_closure(
+    pkg: Rc<Package>,
+    visited: &mut HashSet<String>,
+    order: &mut Vec<Rc<Package>>,
+) {
+    if !visited.insert(pkg.hash.clone()) {
+        return;
+    }
+
+    for dep in &pkg.run_deps {
+        collect_runtime_closure(dep.clone(), visited, order);
+    }
+
+    order.push(pkg);
+}
+
+pub fn collect_closure(
+    pkg: Rc<Package>,
+    visited: &mut HashSet<String>,
+    order: &mut Vec<Rc<Package>>,
+) {
+    if !visited.insert(pkg.hash.clone()) {
+        return;
+    }
+
+    for dep in &pkg.run_deps {
+        collect_closure(dep.clone(), visited, order);
+    }
+    for dep in &pkg.build_deps {
+        collect_closure(dep.clone(), visited, order);
+    }
+
+    order.push(pkg);
+}
+
+pub fn package_base_name(package: &Package) -> String {
+    match package.name.as_deref() {
+        Some(name) if !name.is_empty() => format!("{name}-{}", package.hash),
+        _ => format!("pkg-{}", package.hash),
+    }
+}

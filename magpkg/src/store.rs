@@ -28,7 +28,9 @@ use crate::{
         TorrentFetcher,
     },
     btseed::{self, TorrentSeedInfo, load_torrent_seed_info, seed_lock_path},
-    package::{FetchResource, Package},
+    package::{
+        FetchResource, Package, collect_closure, collect_runtime_closure, package_base_name,
+    },
 };
 
 use librqbit::dht::Id20;
@@ -1641,43 +1643,5 @@ fn format_bytes(bytes: u64) -> String {
         format!("{} {}", bytes, UNITS[unit_index])
     } else {
         format!("{value:.1} {}", UNITS[unit_index])
-    }
-}
-
-fn collect_runtime_closure(
-    pkg: Rc<Package>,
-    visited: &mut HashSet<String>,
-    order: &mut Vec<Rc<Package>>,
-) {
-    if !visited.insert(pkg.hash.clone()) {
-        return;
-    }
-
-    for dep in &pkg.run_deps {
-        collect_runtime_closure(dep.clone(), visited, order);
-    }
-
-    order.push(pkg);
-}
-
-fn collect_closure(pkg: Rc<Package>, visited: &mut HashSet<String>, order: &mut Vec<Rc<Package>>) {
-    if !visited.insert(pkg.hash.clone()) {
-        return;
-    }
-
-    for dep in &pkg.run_deps {
-        collect_closure(dep.clone(), visited, order);
-    }
-    for dep in &pkg.build_deps {
-        collect_closure(dep.clone(), visited, order);
-    }
-
-    order.push(pkg);
-}
-
-fn package_base_name(package: &Package) -> String {
-    match package.name.as_deref() {
-        Some(name) if !name.is_empty() => format!("{name}-{}", package.hash),
-        _ => format!("pkg-{}", package.hash),
     }
 }

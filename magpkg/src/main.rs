@@ -30,7 +30,7 @@ mod store;
 use crate::btseed::TorrentSeeder;
 use crate::errors::format_jr_error;
 use crate::imports::MagImportResolver;
-use crate::package::{Package, PackageGraphBuilder};
+use crate::package::{Package, PackageGraphBuilder, collect_runtime_closure};
 use crate::store::{CleanupOptions, PackageStore};
 
 const DEFAULT_SEED_PORT: u16 = 6881;
@@ -149,8 +149,22 @@ struct ExportTarballArgs {
 #[derive(Args)]
 struct VenvArgs {
     /// Jsonnet expression describing the virtual environment.
-    #[arg(short = 'e', long = "expression", value_name = "EXPR", required = true)]
-    expression: String,
+    #[arg(
+        short = 'e',
+        long = "expression",
+        value_name = "EXPR",
+        conflicts_with = "file",
+        required_unless_present = "file"
+    )]
+    expression: Option<String>,
+    /// Path to a Jsonnet file describing the virtual environment (shorthand for `import`).
+    #[arg(
+        short = 'f',
+        long = "file",
+        value_name = "PATH",
+        conflicts_with = "expression"
+    )]
+    file: Option<PathBuf>,
     /// Parallelism to pass to package build scripts via BUILD_PARALLELISM.
     #[arg(long, default_value_t = default_parallelism())]
     parallelism: usize,
@@ -314,12 +328,26 @@ fn run_export_tarball(args: ExportTarballArgs) -> MagResult<()> {
 }
 
 fn run_venv(args: VenvArgs) -> MagResult<()> {
-    let manifest_value = evaluate_expression(&args.expression)?;
+    let VenvArgs {
+        expression,
+        file,
+        parallelism,
+        command,
+    } = args;
+
+    let manifest_expr = match (expression, file) {
+        (Some(expr), None) => expr,
+        (None, Some(path)) => format!("import {}", quote_jsonnet_string(&path)?),
+        (Some(_), Some(_)) => unreachable!("clap enforces mutual exclusivity"),
+        (None, None) => unreachable!("clap enforces presence of expression or file"),
+    };
+
+    let manifest_value = evaluate_expression(&manifest_expr)?;
     let mut builder = PackageGraphBuilder::default();
     let spec = VenvSpec::from_value(manifest_value, &mut builder)?;
 
     let store = PackageStore::new()?;
-    store.build_packages(&spec.packages, args.parallelism)?;
+    store.build_packages(&spec.packages, parallelism)?;
 
     let rootfs_dir = store.venv_rootfs_dir(&spec.rootfs_hash);
     let rootfs_path = rootfs_dir.join("rootfs");
@@ -341,13 +369,42 @@ fn run_venv(args: VenvArgs) -> MagResult<()> {
         );
     }
 
-    let command = if args.command.is_empty() {
+    let command = if command.is_empty() {
         vec![OsString::from("/bin/sh")]
     } else {
-        args.command.iter().map(OsString::from).collect()
+        command.iter().map(OsString::from).collect()
     };
 
     launch_venv(&rootfs_path, &spec, command)
+}
+
+fn quote_jsonnet_string(path: &Path) -> MagResult<String> {
+    let path_str = path.to_str().ok_or_else(|| {
+        MagError::Generic(format!(
+            "manifest file path is not valid UTF-8: {}",
+            path.display()
+        ))
+    })?;
+
+    let mut out = String::with_capacity(path_str.len() + 2);
+    use std::fmt::Write as _;
+    out.push('"');
+    for ch in path_str.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ch if ch.is_control() => {
+                write!(&mut out, "\\u{:04x}", ch as u32).unwrap();
+            }
+            ch => out.push(ch),
+        }
+    }
+    out.push('"');
+
+    Ok(out)
 }
 
 fn launch_venv(rootfs: &Path, spec: &VenvSpec, command: Vec<OsString>) -> MagResult<()> {
@@ -1055,22 +1112,6 @@ fn compute_runtime_closure(packages: &[Rc<Package>]) -> Vec<Rc<Package>> {
         collect_runtime_closure(pkg.clone(), &mut visited, &mut order);
     }
     order
-}
-
-fn collect_runtime_closure(
-    pkg: Rc<Package>,
-    visited: &mut HashSet<String>,
-    order: &mut Vec<Rc<Package>>,
-) {
-    if !visited.insert(pkg.hash.clone()) {
-        return;
-    }
-
-    for dep in &pkg.run_deps {
-        collect_runtime_closure(dep.clone(), visited, order);
-    }
-
-    order.push(pkg);
 }
 
 fn compute_rootfs_hash(packages: &[Rc<Package>], fs_entries: &[FsEntry]) -> String {
