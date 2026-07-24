@@ -1,0 +1,3 @@
+# Filled after the host and Nix-shell builds independently produce the same
+# bootstrap.tar.zst.
+2703bd4a9bd9fbdddb00cca71cbcced18b769e338df099c8809f28070d50316a  bootstrap.tar.zst
