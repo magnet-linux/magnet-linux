@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/andrewchambers/magpkg/pkgstore"
+	"github.com/andrewchambers/magnet-linux/magpkg/pkgstore"
 	"golang.org/x/sys/unix"
 )
 
@@ -73,6 +73,75 @@ func TestFetchFileURL(t *testing.T) {
 	}
 }
 
+func TestFetchProgressReportsTransferAndCacheHit(t *testing.T) {
+	store := newTestStore(t)
+	content := []byte(strings.Repeat("progress", 40*1024))
+	sourcePath := filepath.Join(t.TempDir(), "source")
+	if err := os.WriteFile(sourcePath, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := pkgstore.Fetch{
+		Filename: "source",
+		SHA256:   sha256Hex(content),
+		URLs: []string{(&url.URL{
+			Scheme: "file",
+			Path:   sourcePath,
+		}).String()},
+	}
+
+	var first []pkgstore.FetchProgress
+	if _, err := store.FetchWithOptions(
+		context.Background(),
+		source,
+		pkgstore.FetchOptions{
+			Progress: func(event pkgstore.FetchProgress) {
+				first = append(first, event)
+			},
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	assertFetchProgressPhase(
+		t,
+		first,
+		pkgstore.FetchProgressDownloading,
+		0,
+		int64(len(content)),
+	)
+	assertFetchProgressPhase(
+		t,
+		first,
+		pkgstore.FetchProgressComplete,
+		int64(len(content)),
+		int64(len(content)),
+	)
+
+	var second []pkgstore.FetchProgress
+	if _, err := store.FetchWithOptions(
+		context.Background(),
+		source,
+		pkgstore.FetchOptions{
+			Progress: func(event pkgstore.FetchProgress) {
+				second = append(second, event)
+			},
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	assertFetchProgressPhase(
+		t,
+		second,
+		pkgstore.FetchProgressCached,
+		int64(len(content)),
+		int64(len(content)),
+	)
+	for _, event := range second {
+		if event.Phase != pkgstore.FetchProgressCached {
+			t.Fatalf("cached fetch reported unexpected phase %q", event.Phase)
+		}
+	}
+}
+
 func TestFetchHTTPFallsBackAfterChecksumMismatch(t *testing.T) {
 	content := []byte("verified HTTP response")
 	var badRequests atomic.Int32
@@ -100,10 +169,33 @@ func TestFetchHTTPFallsBackAfterChecksumMismatch(t *testing.T) {
 		SHA256:   sha256Hex(content),
 		URLs:     []string{server.URL + "/bad", server.URL + "/good"},
 	}
-	cachedPath, err := store.Fetch(context.Background(), fetch)
+	var events []pkgstore.FetchProgress
+	cachedPath, err := store.FetchWithOptions(
+		context.Background(),
+		fetch,
+		pkgstore.FetchOptions{
+			Progress: func(event pkgstore.FetchProgress) {
+				events = append(events, event)
+			},
+		},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertFetchProgressPhase(
+		t,
+		events,
+		pkgstore.FetchProgressURLFailed,
+		0,
+		-1,
+	)
+	assertFetchProgressPhase(
+		t,
+		events,
+		pkgstore.FetchProgressComplete,
+		int64(len(content)),
+		int64(len(content)),
+	)
 	if badRequests.Load() != 1 || goodRequests.Load() != 1 {
 		t.Fatalf(
 			"request counts = bad:%d good:%d, want bad:1 good:1",
@@ -122,6 +214,30 @@ func TestFetchHTTPFallsBackAfterChecksumMismatch(t *testing.T) {
 	if string(got) != string(content) {
 		t.Fatalf("cached content = %q, want %q", got, content)
 	}
+}
+
+func assertFetchProgressPhase(
+	t *testing.T,
+	events []pkgstore.FetchProgress,
+	phase pkgstore.FetchProgressPhase,
+	completed int64,
+	total int64,
+) {
+	t.Helper()
+	for _, event := range events {
+		if event.Phase == phase &&
+			event.CompletedBytes == completed &&
+			event.TotalBytes == total {
+			return
+		}
+	}
+	t.Fatalf(
+		"fetch progress has no %q event with bytes (%d, %d): %+v",
+		phase,
+		completed,
+		total,
+		events,
+	)
 }
 
 func TestFetchReplacesInvalidCacheEntry(t *testing.T) {

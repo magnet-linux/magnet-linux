@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/andrewchambers/magpkg/pkgstore"
+	"github.com/andrewchambers/magnet-linux/magpkg/pkgstore"
 	"golang.org/x/sys/unix"
 )
 
-func TestCleanupFetchesRemovesExpiredAndRetainsTouched(t *testing.T) {
+func TestCleanFetchesRemovesExpiredAndRetainsTouched(t *testing.T) {
 	store := newTestStore(t)
 	expiredPath := fetchTestSource(t, store, "expired", []byte("expired source"))
 	retainedPath := fetchTestSource(t, store, "retained", []byte("retained source"))
@@ -39,7 +39,7 @@ func TestCleanupFetchesRemovesExpiredAndRetainsTouched(t *testing.T) {
 		t.Fatalf("Fetch() path = %q, want %q", gotPath, retainedPath)
 	}
 
-	if err := store.CleanupFetches(context.Background(), time.Hour); err != nil {
+	if err := store.CleanFetches(context.Background(), time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	assertPathMissing(t, expiredPath)
@@ -48,7 +48,7 @@ func TestCleanupFetchesRemovesExpiredAndRetainsTouched(t *testing.T) {
 	assertPathMissing(t, retainedPath+".lock")
 }
 
-func TestCleanupFetchesSkipsActiveLock(t *testing.T) {
+func TestCleanFetchesSkipsActiveLock(t *testing.T) {
 	store := newTestStore(t)
 	cachedPath := fetchTestSource(t, store, "source", []byte("locked source"))
 	old := time.Now().Add(-2 * time.Hour)
@@ -66,7 +66,7 @@ func TestCleanupFetchesSkipsActiveLock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := store.CleanupFetches(context.Background(), time.Hour); err != nil {
+	if err := store.CleanFetches(context.Background(), time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	assertRegularFile(t, cachedPath)
@@ -79,14 +79,14 @@ func TestCleanupFetchesSkipsActiveLock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := store.CleanupFetches(context.Background(), time.Hour); err != nil {
+	if err := store.CleanFetches(context.Background(), time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	assertPathMissing(t, cachedPath)
 	assertPathMissing(t, lockPath)
 }
 
-func TestCleanupFetchesPartialsAndUnknownEntries(t *testing.T) {
+func TestCleanFetchesPartialsAndUnknownEntries(t *testing.T) {
 	store := newTestStore(t)
 	fetchRoot := filepath.Join(store.Path(), "fetch")
 	if err := os.MkdirAll(fetchRoot, 0o755); err != nil {
@@ -111,7 +111,16 @@ func TestCleanupFetchesPartialsAndUnknownEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := store.CleanupFetches(context.Background(), time.Hour); err != nil {
+	var events []pkgstore.CleanEvent
+	if err := store.CleanFetchesWithOptions(
+		context.Background(),
+		time.Hour,
+		pkgstore.CleanOptions{
+			OnRemove: func(event pkgstore.CleanEvent) {
+				events = append(events, event)
+			},
+		},
+	); err != nil {
 		t.Fatal(err)
 	}
 	assertPathMissing(t, expiredPartial)
@@ -119,27 +128,46 @@ func TestCleanupFetchesPartialsAndUnknownEntries(t *testing.T) {
 	assertRegularFile(t, recentPartial)
 	assertPathMissing(t, filepath.Join(fetchRoot, recentDigest+".lock"))
 	assertRegularFile(t, unknown)
+	if len(events) != 1 ||
+		events[0].Kind != pkgstore.CleanKindFetchPartial ||
+		events[0].Path != expiredPartial {
+		t.Fatalf("cleanup events = %#v", events)
+	}
 }
 
-func TestCleanupFetchesValidationAndMissingCache(t *testing.T) {
+func TestCleanFetchesAllIgnoresFutureModificationTime(t *testing.T) {
 	store := newTestStore(t)
-	if err := store.CleanupFetches(context.Background(), time.Hour); err != nil {
-		t.Fatalf("CleanupFetches() on missing cache: %v", err)
+	cachedPath := fetchTestSource(t, store, "future", []byte("future source"))
+	future := time.Now().Add(24 * time.Hour)
+	if err := os.Chtimes(cachedPath, future, future); err != nil {
+		t.Fatal(err)
 	}
 
-	if err := store.CleanupFetches(context.Background(), -time.Second); err == nil ||
+	if err := store.CleanFetches(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+	assertPathMissing(t, cachedPath)
+}
+
+func TestCleanFetchesValidationAndMissingCache(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.CleanFetches(context.Background(), time.Hour); err != nil {
+		t.Fatalf("CleanFetches() on missing cache: %v", err)
+	}
+
+	if err := store.CleanFetches(context.Background(), -time.Second); err == nil ||
 		!strings.Contains(err.Error(), "must not be negative") {
 		t.Fatalf("negative maxAge error = %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := store.CleanupFetches(ctx, time.Hour); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled CleanupFetches() error = %v, want context.Canceled", err)
+	if err := store.CleanFetches(ctx, time.Hour); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled CleanFetches() error = %v, want context.Canceled", err)
 	}
 
 	var nilStore *pkgstore.Store
-	if err := nilStore.CleanupFetches(context.Background(), time.Hour); err == nil ||
+	if err := nilStore.CleanFetches(context.Background(), time.Hour); err == nil ||
 		!strings.Contains(err.Error(), "store is not initialized") {
 		t.Fatalf("nil store error = %v", err)
 	}

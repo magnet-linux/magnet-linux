@@ -4,7 +4,7 @@ set -euo pipefail
 umask 022
 
 bootstrap_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
-work_dir=${BOOTSTRAP_WORK_DIR:-"$bootstrap_dir/work"}
+work_dir=${BOOTSTRAP_WORK_DIR:-"$bootstrap_dir/_work"}
 out_dir=${BOOTSTRAP_OUT_DIR:-"$bootstrap_dir/out"}
 distfiles_dir="$work_dir/distfiles"
 bridge_build_dir="$work_dir/bridge-build"

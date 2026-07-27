@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/andrewchambers/magpkg/pkgstore"
+	"github.com/andrewchambers/magnet-linux/magpkg/pkgstore"
 )
 
 func TestInit(t *testing.T) {

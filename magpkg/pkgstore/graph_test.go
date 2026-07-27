@@ -2,14 +2,14 @@ package pkgstore_test
 
 import (
 	"context"
-	"encoding/hex"
+	"encoding/base32"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
-	"github.com/andrewchambers/magpkg/pkgstore"
+	"github.com/andrewchambers/magnet-linux/magpkg/pkgstore"
 )
 
 func TestPackageGraphFromJsonnet(t *testing.T) {
@@ -89,6 +89,13 @@ func TestPackageGraphFromJsonnet(t *testing.T) {
 	if root.Build != "build root" {
 		t.Fatalf("root.Build = %q, want %q", root.Build, "build root")
 	}
+	if !reflect.DeepEqual(root.BuildEnv, defaultBuildEnvironment()) {
+		t.Fatalf(
+			"root.BuildEnv = %#v, want %#v",
+			root.BuildEnv,
+			defaultBuildEnvironment(),
+		)
+	}
 	if !reflect.DeepEqual(root.RunDeps, []pkgstore.PackageID{dependencyID}) {
 		t.Fatalf("root.RunDeps = %#v, want [%q]", root.RunDeps, dependencyID)
 	}
@@ -105,6 +112,85 @@ func TestPackageGraphFromJsonnet(t *testing.T) {
 	}}
 	if !reflect.DeepEqual(root.Fetch, wantFetch) {
 		t.Fatalf("root.Fetch = %#v, want %#v", root.Fetch, wantFetch)
+	}
+}
+
+func TestPackageGraphFromJsonnetAllowsOmittedName(t *testing.T) {
+	jsonnetFile := writeJsonnet(t, "unnamed.jsonnet", `{
+		package: {
+			build: "",
+			runDeps: [],
+			buildDeps: [],
+			fetch: [],
+		},
+	}`)
+
+	graph, err := pkgstore.PackageGraphFromJsonnet(
+		context.Background(),
+		jsonnetFile,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition := graph.Nodes[graph.Roots["package"]]
+	if definition.Name != "" {
+		t.Fatalf("package name = %q, want empty", definition.Name)
+	}
+}
+
+func TestPackageGraphFromJsonnetResolvesBuildEnvironment(t *testing.T) {
+	jsonnetFile := writeJsonnet(t, "environment.jsonnet", `
+		local package = {
+			name: "package",
+			build: "build",
+			runDeps: [],
+			buildDeps: [],
+			fetch: [],
+		};
+
+		{
+			default: package,
+			explicitDefault: package + {
+				buildEnv: {
+					PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+					HOME: "/build",
+					SHELL: "/bin/sh",
+					CONFIG_SHELL: "/bin/sh",
+					LC_ALL: "C",
+					TZ: "UTC",
+				},
+			},
+			custom: package + {
+				buildEnv: {
+					PATH: "/bin",
+					CUSTOM: "custom value",
+				},
+			},
+		}
+	`)
+
+	graph, err := pkgstore.PackageGraphFromJsonnet(
+		context.Background(),
+		jsonnetFile,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defaultID := graph.Roots["default"]
+	if graph.Roots["explicitDefault"] != defaultID {
+		t.Fatal("omitted and explicitly default build environments have different IDs")
+	}
+	customID := graph.Roots["custom"]
+	if customID == defaultID {
+		t.Fatal("build environment override did not change the package ID")
+	}
+
+	wantCustom := defaultBuildEnvironment()
+	wantCustom["PATH"] = "/bin"
+	wantCustom["CUSTOM"] = "custom value"
+	if got := graph.Nodes[customID].BuildEnv; !reflect.DeepEqual(got, wantCustom) {
+		t.Fatalf("custom BuildEnv = %#v, want %#v", got, wantCustom)
 	}
 }
 
@@ -252,6 +338,19 @@ func TestPackageGraphFromJsonnetValidatesDefinitions(t *testing.T) {
 			wantError: "root[\"package\"].runDeps: expected array",
 		},
 		{
+			name: "package name",
+			definition: `{
+				package: {
+					name: "../package",
+					build: "build",
+					runDeps: [],
+					buildDeps: [],
+					fetch: [],
+				},
+			}`,
+			wantError: "must start with an ASCII letter or digit",
+		},
+		{
 			name: "fetch checksum",
 			definition: `{
 				package: {
@@ -267,6 +366,62 @@ func TestPackageGraphFromJsonnetValidatesDefinitions(t *testing.T) {
 				},
 			}`,
 			wantError: "expected a 64-character hexadecimal SHA-256 digest",
+		},
+		{
+			name: "build environment type",
+			definition: `{
+				package: {
+					name: "package",
+					build: "build",
+					buildEnv: [],
+					runDeps: [],
+					buildDeps: [],
+					fetch: [],
+				},
+			}`,
+			wantError: "buildEnv: expected object",
+		},
+		{
+			name: "build environment value",
+			definition: `{
+				package: {
+					name: "package",
+					build: "build",
+					buildEnv: { PATH: 42 },
+					runDeps: [],
+					buildDeps: [],
+					fetch: [],
+				},
+			}`,
+			wantError: `buildEnv["PATH"]: expected string`,
+		},
+		{
+			name: "build environment name",
+			definition: `{
+				package: {
+					name: "package",
+					build: "build",
+					buildEnv: { "INVALID-NAME": "value" },
+					runDeps: [],
+					buildDeps: [],
+					fetch: [],
+				},
+			}`,
+			wantError: "is not a valid shell variable name",
+		},
+		{
+			name: "executor environment",
+			definition: `{
+				package: {
+					name: "package",
+					build: "build",
+					buildEnv: { BUILD_PARALLELISM: "99" },
+					runDeps: [],
+					buildDeps: [],
+					fetch: [],
+				},
+			}`,
+			wantError: "BUILD_PARALLELISM is controlled by the build executor",
 		},
 	}
 
@@ -306,11 +461,27 @@ func writeJsonnet(t *testing.T, name string, source string) string {
 
 func assertPackageID(t *testing.T, id pkgstore.PackageID) {
 	t.Helper()
-	decoded, err := hex.DecodeString(string(id))
+	encoding := base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").
+		WithPadding(base32.NoPadding)
+	decoded, err := encoding.DecodeString(string(id))
 	if err != nil {
-		t.Fatalf("PackageID %q is not hexadecimal: %v", id, err)
+		t.Fatalf("PackageID %q is not lowercase Base32: %v", id, err)
 	}
 	if len(decoded) != 32 {
 		t.Fatalf("PackageID %q decodes to %d bytes, want 32", id, len(decoded))
+	}
+	if got, want := len(id), 52; got != want {
+		t.Fatalf("PackageID %q has length %d, want %d", id, got, want)
+	}
+}
+
+func defaultBuildEnvironment() map[string]string {
+	return map[string]string{
+		"PATH":         "/usr/bin:/bin:/usr/sbin:/sbin",
+		"HOME":         "/build",
+		"SHELL":        "/bin/sh",
+		"CONFIG_SHELL": "/bin/sh",
+		"LC_ALL":       "C",
+		"TZ":           "UTC",
 	}
 }

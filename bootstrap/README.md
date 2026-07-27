@@ -12,7 +12,7 @@ The host must be x86-64 Linux and provide the commands checked near the top of
 nix-shell bootstrap/shell.nix --pure --run ./bootstrap/host/build.sh
 ```
 
-Downloaded source archives are cached in `bootstrap/work/distfiles` and
+Downloaded source archives are cached in `bootstrap/_work/distfiles` and
 verified against `bootstrap/sources`. Builds run without network access.
 `bootstrap/bootstrap.sha256` is never updated by the build; it is filled only
 after independent builds agree.

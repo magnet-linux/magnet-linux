@@ -14,16 +14,43 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
 const (
 	fetchDirectoryName = "fetch"
 	fetchLockSuffix    = ".lock"
 	fetchTempSuffix    = ".tmp"
-	fetchLockPoll      = 25 * time.Millisecond
 )
+
+// FetchProgressPhase describes the current state of one source fetch.
+type FetchProgressPhase string
+
+const (
+	FetchProgressCached      FetchProgressPhase = "cached"
+	FetchProgressDownloading FetchProgressPhase = "downloading"
+	FetchProgressURLFailed   FetchProgressPhase = "url-failed"
+	FetchProgressComplete    FetchProgressPhase = "complete"
+)
+
+// FetchProgress is a point-in-time update for one source. TotalBytes is -1
+// when the source size is unknown.
+type FetchProgress struct {
+	Filename       string
+	URL            string
+	Phase          FetchProgressPhase
+	CompletedBytes int64
+	TotalBytes     int64
+	Err            error
+}
+
+// FetchProgressFunc receives fetch progress updates. Callbacks should return
+// quickly and may be called concurrently by future batch fetchers.
+type FetchProgressFunc func(FetchProgress)
+
+// FetchOptions controls a single source fetch.
+type FetchOptions struct {
+	Progress FetchProgressFunc
+}
 
 // Fetch downloads source into the store's content-addressed fetch cache and
 // returns the absolute path to the verified cached file.
@@ -31,6 +58,15 @@ const (
 // The URLs are attempted in order. Fetch currently supports file, http, and
 // https URLs. The SHA-256 digest is always verified before a file is returned.
 func (s *Store) Fetch(ctx context.Context, fetch Fetch) (path string, retErr error) {
+	return s.FetchWithOptions(ctx, fetch, FetchOptions{})
+}
+
+// FetchWithOptions is Fetch with progress reporting.
+func (s *Store) FetchWithOptions(
+	ctx context.Context,
+	fetch Fetch,
+	options FetchOptions,
+) (path string, retErr error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -53,7 +89,7 @@ func (s *Store) Fetch(ctx context.Context, fetch Fetch) (path string, retErr err
 
 	destination := filepath.Join(fetchRoot, digest)
 	lockPath := destination + fetchLockSuffix
-	lock, err := acquireFetchLock(ctx, lockPath)
+	lock, err := acquireLock(ctx, lockPath)
 	if err != nil {
 		return "", fmt.Errorf("lock fetch %q: %w", fetch.Filename, err)
 	}
@@ -70,12 +106,22 @@ func (s *Store) Fetch(ctx context.Context, fetch Fetch) (path string, retErr err
 		return "", err
 	}
 
-	valid, err := verifyFileSHA256(ctx, destination, expectedSHA256)
+	valid, verifiedBytes, err := verifyFileSHA256(
+		ctx,
+		destination,
+		expectedSHA256,
+	)
 	switch {
 	case err == nil && valid:
 		if err := touchFile(destination); err != nil {
 			return "", fmt.Errorf("touch cached fetch %q: %w", fetch.Filename, err)
 		}
+		reportFetchProgress(options.Progress, FetchProgress{
+			Filename:       fetch.Filename,
+			Phase:          FetchProgressCached,
+			CompletedBytes: verifiedBytes,
+			TotalBytes:     verifiedBytes,
+		})
 		return destination, nil
 	case err == nil:
 		if err := os.Remove(destination); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -97,16 +143,42 @@ func (s *Store) Fetch(ctx context.Context, fetch Fetch) (path string, retErr err
 			return "", err
 		}
 
-		err := s.fetchURL(ctx, rawURL, destination, expectedSHA256)
+		err := s.fetchURL(
+			ctx,
+			rawURL,
+			destination,
+			expectedSHA256,
+			fetch.Filename,
+			options.Progress,
+		)
 		if err == nil {
 			if err := touchFile(destination); err != nil {
 				return "", fmt.Errorf("touch fetched source %q: %w", fetch.Filename, err)
 			}
+			info, statErr := os.Stat(destination)
+			var size int64 = -1
+			if statErr == nil {
+				size = info.Size()
+			}
+			reportFetchProgress(options.Progress, FetchProgress{
+				Filename:       fetch.Filename,
+				URL:            redactedFetchURL(rawURL),
+				Phase:          FetchProgressComplete,
+				CompletedBytes: size,
+				TotalBytes:     size,
+			})
 			return destination, nil
 		}
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
+		reportFetchProgress(options.Progress, FetchProgress{
+			Filename:   fetch.Filename,
+			URL:        redactedFetchURL(rawURL),
+			Phase:      FetchProgressURLFailed,
+			TotalBytes: -1,
+			Err:        err,
+		})
 		urlErrors = append(urlErrors, fmt.Errorf("%q: %w", rawURL, err))
 	}
 
@@ -135,6 +207,8 @@ func (s *Store) fetchURL(
 	rawURL string,
 	destination string,
 	expectedSHA256 [sha256.Size]byte,
+	filename string,
+	progress FetchProgressFunc,
 ) (retErr error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -172,11 +246,20 @@ func (s *Store) fetchURL(
 
 	hasher := sha256.New()
 	writer := io.MultiWriter(temp, hasher)
+	reportTransfer := func(completed int64, total int64) {
+		reportFetchProgress(progress, FetchProgress{
+			Filename:       filename,
+			URL:            parsed.Redacted(),
+			Phase:          FetchProgressDownloading,
+			CompletedBytes: completed,
+			TotalBytes:     total,
+		})
+	}
 	switch scheme {
 	case "file":
-		err = fetchFileURL(ctx, parsed, writer)
+		err = fetchFileURL(ctx, parsed, writer, reportTransfer)
 	case "http", "https":
-		err = fetchHTTPURL(ctx, parsed, writer)
+		err = fetchHTTPURL(ctx, parsed, writer, reportTransfer)
 	}
 	if err != nil {
 		return err
@@ -209,7 +292,12 @@ func (s *Store) fetchURL(
 	return nil
 }
 
-func fetchFileURL(ctx context.Context, source *url.URL, destination io.Writer) error {
+func fetchFileURL(
+	ctx context.Context,
+	source *url.URL,
+	destination io.Writer,
+	progress func(int64, int64),
+) error {
 	path, err := fileURLPath(source)
 	if err != nil {
 		return err
@@ -220,7 +308,23 @@ func fetchFileURL(ctx context.Context, source *url.URL, destination io.Writer) e
 	}
 	defer file.Close()
 
-	if _, err := copyContext(ctx, destination, file); err != nil {
+	total := int64(-1)
+	if info, err := file.Stat(); err == nil && info.Mode().IsRegular() {
+		total = info.Size()
+	}
+	if progress != nil {
+		progress(0, total)
+	}
+	if _, err := copyContextWithProgress(
+		ctx,
+		destination,
+		file,
+		func(completed int64) {
+			if progress != nil {
+				progress(completed, total)
+			}
+		},
+	); err != nil {
 		return fmt.Errorf("read file URL: %w", err)
 	}
 	return nil
@@ -247,7 +351,12 @@ func fileURLPath(source *url.URL) (string, error) {
 	return path, nil
 }
 
-func fetchHTTPURL(ctx context.Context, source *url.URL, destination io.Writer) error {
+func fetchHTTPURL(
+	ctx context.Context,
+	source *url.URL,
+	destination io.Writer,
+	progress func(int64, int64),
+) error {
 	if source.Host == "" {
 		return errors.New("HTTP URL has no host")
 	}
@@ -267,13 +376,35 @@ func fetchHTTPURL(ctx context.Context, source *url.URL, destination io.Writer) e
 		response.StatusCode >= http.StatusMultipleChoices {
 		return fmt.Errorf("download: HTTP %s", response.Status)
 	}
-	if _, err := copyContext(ctx, destination, response.Body); err != nil {
+	total := response.ContentLength
+	if progress != nil {
+		progress(0, total)
+	}
+	if _, err := copyContextWithProgress(
+		ctx,
+		destination,
+		response.Body,
+		func(completed int64) {
+			if progress != nil {
+				progress(completed, total)
+			}
+		},
+	); err != nil {
 		return fmt.Errorf("download response: %w", err)
 	}
 	return nil
 }
 
 func copyContext(ctx context.Context, destination io.Writer, source io.Reader) (int64, error) {
+	return copyContextWithProgress(ctx, destination, source, nil)
+}
+
+func copyContextWithProgress(
+	ctx context.Context,
+	destination io.Writer,
+	source io.Reader,
+	progress func(int64),
+) (int64, error) {
 	buffer := make([]byte, 128*1024)
 	var written int64
 	for {
@@ -291,6 +422,9 @@ func copyContext(ctx context.Context, destination io.Writer, source io.Reader) (
 			if count != read {
 				return written, io.ErrShortWrite
 			}
+			if progress != nil {
+				progress(written)
+			}
 		}
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
@@ -305,167 +439,33 @@ func verifyFileSHA256(
 	ctx context.Context,
 	path string,
 	expected [sha256.Size]byte,
-) (bool, error) {
+) (bool, int64, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	defer file.Close()
 
 	hasher := sha256.New()
-	if _, err := copyContext(ctx, hasher, file); err != nil {
-		return false, err
-	}
-	return bytes.Equal(hasher.Sum(nil), expected[:]), nil
-}
-
-type fetchLock struct {
-	file *os.File
-	path string
-}
-
-func acquireFetchLock(ctx context.Context, path string) (*fetchLock, error) {
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
-		if err != nil {
-			return nil, err
-		}
-
-		for {
-			err = unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
-			switch {
-			case err == nil:
-			case errors.Is(err, unix.EINTR):
-				continue
-			case errors.Is(err, unix.EWOULDBLOCK), errors.Is(err, unix.EAGAIN):
-				timer := time.NewTimer(fetchLockPoll)
-				select {
-				case <-ctx.Done():
-					if !timer.Stop() {
-						<-timer.C
-					}
-					_ = file.Close()
-					return nil, ctx.Err()
-				case <-timer.C:
-				}
-				continue
-			default:
-				_ = file.Close()
-				return nil, err
-			}
-			break
-		}
-
-		// Cleanup may unlink the pathname while a fetcher is waiting on the
-		// old inode. Only proceed if the inode we locked is still current.
-		current, err := fetchLockFileIsCurrent(file, path)
-		if err != nil {
-			return nil, errors.Join(err, unlockAndCloseFetchLockFile(file))
-		}
-		if current {
-			return &fetchLock{file: file, path: path}, nil
-		}
-		if err := unlockAndCloseFetchLockFile(file); err != nil {
-			return nil, err
-		}
-	}
-}
-
-func tryAcquireFetchLock(
-	ctx context.Context,
-	path string,
-) (*fetchLock, bool, error) {
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, false, err
-		}
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
-		if err != nil {
-			return nil, false, err
-		}
-
-		for {
-			err = unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
-			if errors.Is(err, unix.EINTR) {
-				continue
-			}
-			break
-		}
-		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
-			_ = file.Close()
-			return nil, true, nil
-		}
-		if err != nil {
-			_ = file.Close()
-			return nil, false, err
-		}
-
-		current, err := fetchLockFileIsCurrent(file, path)
-		if err != nil {
-			return nil, false, errors.Join(err, unlockAndCloseFetchLockFile(file))
-		}
-		if current {
-			return &fetchLock{file: file, path: path}, false, nil
-		}
-		if err := unlockAndCloseFetchLockFile(file); err != nil {
-			return nil, false, err
-		}
-	}
-}
-
-func fetchLockFileIsCurrent(file *os.File, path string) (bool, error) {
-	lockedInfo, err := file.Stat()
+	size, err := copyContext(ctx, hasher, file)
 	if err != nil {
-		return false, err
+		return false, size, err
 	}
-	pathInfo, err := os.Stat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
+	return bytes.Equal(hasher.Sum(nil), expected[:]), size, nil
+}
+
+func reportFetchProgress(progress FetchProgressFunc, event FetchProgress) {
+	if progress != nil {
+		progress(event)
 	}
+}
+
+func redactedFetchURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return false, err
+		return rawURL
 	}
-	return os.SameFile(lockedInfo, pathInfo), nil
-}
-
-func unlockAndCloseFetchLockFile(file *os.File) error {
-	unlockErr := unix.Flock(int(file.Fd()), unix.LOCK_UN)
-	closeErr := file.Close()
-	return errors.Join(unlockErr, closeErr)
-}
-
-func (lock *fetchLock) Unlink() error {
-	if lock == nil || lock.file == nil {
-		return nil
-	}
-	current, err := fetchLockFileIsCurrent(lock.file, lock.path)
-	if err != nil {
-		return err
-	}
-	if !current {
-		if _, err := os.Stat(lock.path); errors.Is(err, os.ErrNotExist) {
-			return nil
-		} else if err != nil {
-			return err
-		}
-		return errors.New("fetch lock path changed while locked")
-	}
-	if err := os.Remove(lock.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
-}
-
-func (lock *fetchLock) Close() error {
-	if lock == nil || lock.file == nil {
-		return nil
-	}
-	err := unlockAndCloseFetchLockFile(lock.file)
-	lock.file = nil
-	return err
+	return parsed.Redacted()
 }
 
 func touchFile(path string) error {

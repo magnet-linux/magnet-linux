@@ -1,55 +1,44 @@
 package pkgstore
 
 import (
-	"os"
+	"context"
 	"path/filepath"
-	"strings"
 	"testing"
-
-	"golang.org/x/sys/unix"
 )
 
-func TestFetchLockDetectsReplacementInode(t *testing.T) {
-	lockPath := filepath.Join(t.TempDir(), strings.Repeat("0", 64)+fetchLockSuffix)
-	oldFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+func TestSharedLocksExcludeCleanupLock(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "package.lock")
+	first, err := acquireSharedLock(context.Background(), lockPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer oldFile.Close()
-	if err := unix.Flock(int(oldFile.Fd()), unix.LOCK_EX); err != nil {
-		t.Fatal(err)
-	}
-	defer unix.Flock(int(oldFile.Fd()), unix.LOCK_UN) //nolint:errcheck
-
-	if err := os.Remove(lockPath); err != nil {
-		t.Fatal(err)
-	}
-	replacement, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	second, err := acquireSharedLock(context.Background(), lockPath)
 	if err != nil {
+		_ = first.Close()
 		t.Fatal(err)
-	}
-	defer replacement.Close()
-
-	current, err := fetchLockFileIsCurrent(oldFile, lockPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if current {
-		t.Fatal("unlinked lock file was considered current")
-	}
-	current, err = fetchLockFileIsCurrent(replacement, lockPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !current {
-		t.Fatal("replacement lock file was not considered current")
 	}
 
-	oldLock := &fetchLock{file: oldFile, path: lockPath}
-	if err := oldLock.Unlink(); err == nil {
-		t.Fatal("stale lock unlinked the replacement path")
+	if lock, busy, err := tryLock(context.Background(), lockPath); err != nil {
+		t.Fatal(err)
+	} else if !busy {
+		_ = lock.Close()
+		t.Fatal("exclusive cleanup lock acquired while shared locks were held")
 	}
-	if _, err := os.Stat(lockPath); err != nil {
-		t.Fatalf("replacement lock was removed: %v", err)
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	lock, busy, err := tryLock(context.Background(), lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if busy {
+		t.Fatal("exclusive cleanup lock remained busy after shared locks closed")
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
