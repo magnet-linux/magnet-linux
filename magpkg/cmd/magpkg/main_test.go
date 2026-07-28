@@ -25,6 +25,16 @@ import (
 	"github.com/andrewchambers/magnet-linux/magpkg/pkgstore"
 )
 
+// runCLI runs the command line with the process standard input.
+func runCLI(
+	ctx context.Context,
+	args []string,
+	stdout io.Writer,
+	stderr io.Writer,
+) error {
+	return runCLIWithInput(ctx, args, os.Stdin, stdout, stderr)
+}
+
 func TestInitAndBuildCommands(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "store")
 	var stdout bytes.Buffer
@@ -102,7 +112,7 @@ func TestInitAndBuildCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	packageID := graph.Roots["bootstrap"]
+	packageID, _ := graph.Root("bootstrap")
 	wantArtifact := filepath.Join(
 		absoluteStore,
 		"packages",
@@ -402,7 +412,7 @@ func TestBuildUsesBinaryCacheFromEnvironment(t *testing.T) {
 		t.Fatalf("populate remote store: %v\nstderr:\n%s", err, stderr.String())
 	}
 	remoteArtifact := strings.TrimSpace(stdout.String())
-	remoteStore, err := pkgstore.Open(remotePath)
+	remoteStore, err := pkgstore.Open(remotePath, pkgstore.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -583,7 +593,7 @@ func TestShellCommandUsesCachedPackageLauncher(t *testing.T) {
 	environmentsPath := filepath.Join(home, ".magpkg", "environments")
 	if !strings.HasPrefix(
 		lines[0],
-		"launcher-root="+filepath.Join(environmentsPath, "roots")+string(os.PathSeparator),
+		"launcher-root="+environmentsPath+string(os.PathSeparator),
 	) || !strings.HasSuffix(lines[0], string(os.PathSeparator)+"root") {
 		t.Fatalf("launcher root output = %q", lines[0])
 	}
@@ -596,7 +606,7 @@ func TestShellCommandUsesCachedPackageLauncher(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	packageID := graph.Roots["shell"]
+	packageID, _ := graph.Root("shell")
 	artifactPath := filepath.Join(
 		storePath,
 		"packages",
@@ -1120,15 +1130,31 @@ func TestParseCleanAge(t *testing.T) {
 }
 
 func TestSelectBuildRootsSortsAndDeduplicatesDefaults(t *testing.T) {
-	first := pkggraph.ID(strings.Repeat("a", 52))
-	second := pkggraph.ID(strings.Repeat("b", 52))
-	graph := &pkggraph.Graph{
-		Roots: map[string]pkggraph.ID{
-			"zeta":  second,
-			"alpha": first,
-			"alias": first,
-		},
+	var builder pkggraph.Builder
+	first, err := builder.AddDefinition(pkggraph.Definition{
+		Name:  "alpha",
+		Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
+	second, err := builder.AddDefinition(pkggraph.Definition{
+		Name:  "zeta",
+		Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, packageID := range map[string]pkggraph.ID{
+		"zeta":  second,
+		"alpha": first,
+		"alias": first,
+	} {
+		if err := builder.SetRoot(name, packageID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	graph := builder.Graph()
 	roots, err := selectBuildRoots(graph, nil)
 	if err != nil {
 		t.Fatal(err)

@@ -99,15 +99,12 @@ The environment directory has this layout:
 ```
 $HOME/.magpkg/environments/
 |-- .magpkg-environments.json
-|-- roots/
-|   `-- <environment-id>/
-|       |-- metadata.json
-|       `-- root/
-|-- locks/
-|   `-- <environment-id>.lock
-`-- work/
-    `-- <environment-id>/
-        `-- root/
+|-- <environment-id>/
+|   |-- metadata.json
+|   `-- root/
+|-- <environment-id>.lock
+`-- <environment-id>.workdir/
+    `-- root/
 ```
 
 The environment ID hashes a format domain and the dependency-first, ordered

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"runtime"
-	"slices"
 	"strings"
 
 	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
@@ -124,7 +123,7 @@ func runBuild(
 	if err != nil {
 		return err
 	}
-	store, err := pkgstore.OpenWithOptions(
+	store, err := pkgstore.Open(
 		storePath,
 		commandStoreOpenOptions(resolveBinaryCacheURL(
 			*binaryCache,
@@ -152,7 +151,7 @@ func runBuild(
 	}
 
 	fetchProgress := newFetchProgressRenderer(ctx, stderr)
-	packages, buildErr := store.BuildPackagesWithOptions(
+	packages, buildErr := store.BuildPackages(
 		ctx,
 		graph,
 		rootIDs,
@@ -184,18 +183,14 @@ func selectBuildRoots(
 		return nil, errors.New("package graph is nil")
 	}
 	if len(selectors) == 0 {
-		rootNames := make([]string, 0, len(graph.Roots))
-		for rootName := range graph.Roots {
-			rootNames = append(rootNames, rootName)
-		}
-		slices.Sort(rootNames)
+		rootNames := graph.RootNames()
 		if len(rootNames) == 0 {
 			return nil, errors.New("package graph exports no roots")
 		}
 		rootIDs := make([]pkggraph.ID, 0, len(rootNames))
 		seen := make(map[pkggraph.ID]struct{}, len(rootNames))
 		for _, rootName := range rootNames {
-			packageID := graph.Roots[rootName]
+			packageID, _ := graph.Root(rootName)
 			if _, ok := seen[packageID]; ok {
 				continue
 			}
@@ -208,21 +203,16 @@ func selectBuildRoots(
 	rootIDs := make([]pkggraph.ID, 0, len(selectors))
 	seen := make(map[pkggraph.ID]struct{}, len(selectors))
 	for _, selector := range selectors {
-		packageID, ok := graph.Roots[selector]
+		packageID, ok := graph.Root(selector)
 		if !ok {
 			packageID = pkggraph.ID(selector)
-			_, ok = graph.Nodes[packageID]
+			ok = graph.HasNode(packageID)
 		}
 		if !ok {
-			available := make([]string, 0, len(graph.Roots))
-			for rootName := range graph.Roots {
-				available = append(available, rootName)
-			}
-			slices.Sort(available)
 			return nil, fmt.Errorf(
 				"unknown package root %q (available roots: %s)",
 				selector,
-				strings.Join(available, ", "),
+				strings.Join(graph.RootNames(), ", "),
 			)
 		}
 		if _, ok := seen[packageID]; ok {

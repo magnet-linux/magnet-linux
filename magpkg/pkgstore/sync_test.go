@@ -541,9 +541,7 @@ func TestSyncRequiresArtifactsBuiltSeparately(t *testing.T) {
 	}
 	if _, err := store.BuildPackages(
 		context.Background(),
-		graph,
-		packageID,
-	); err != nil {
+		graph, []pkggraph.ID{packageID}, BuildOptions{}); err != nil {
 		t.Fatalf("BuildPackages(): %v", err)
 	}
 	if _, err := store.Sync(
@@ -864,10 +862,14 @@ func syncTestGraph(
 	packageID pkggraph.ID,
 	definition pkggraph.Definition,
 ) *pkggraph.Graph {
-	return &pkggraph.Graph{
-		Nodes: map[pkggraph.ID]pkggraph.Definition{packageID: definition},
-		Roots: map[string]pkggraph.ID{definition.Name: packageID},
+	var builder pkggraph.Builder
+	if _, err := builder.AddDefinition(definition); err != nil {
+		panic(err)
 	}
+	if err := builder.SetRoot(definition.Name, packageID); err != nil {
+		panic(err)
+	}
+	return builder.Graph()
 }
 
 func writeSyncTestFile(

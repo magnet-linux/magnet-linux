@@ -29,10 +29,8 @@ const (
 	environmentFormat           = "magpkg-environment"
 	environmentFormatVersion    = 1
 
-	rootsDirectory = "roots"
-	locksDirectory = "locks"
-	workDirectory  = "work"
-	lockSuffix     = ".lock"
+	lockSuffix = ".lock"
+	workSuffix = ".workdir"
 
 	environmentIdentityDomain = "magpkg-environment-v1\x00"
 
@@ -104,12 +102,6 @@ func Open(
 	if err := validateRoot(absolutePath); err != nil {
 		return nil, fmt.Errorf("shellenv: open environments metadata: %w", err)
 	}
-	if err := os.MkdirAll(
-		filepath.Join(absolutePath, locksDirectory),
-		0o755,
-	); err != nil {
-		return nil, fmt.Errorf("shellenv: create locks directory: %w", err)
-	}
 	return openEnvironment(
 		ctx,
 		absolutePath,
@@ -153,19 +145,6 @@ func Acquire(
 	}
 
 	environmentID := identityForClosure(closure)
-	for _, directory := range []string{
-		filepath.Join(absolutePath, rootsDirectory),
-		filepath.Join(absolutePath, locksDirectory),
-		filepath.Join(absolutePath, workDirectory),
-	} {
-		if err := os.MkdirAll(directory, 0o755); err != nil {
-			return nil, fmt.Errorf(
-				"shellenv: create environment directory: %w",
-				err,
-			)
-		}
-	}
-
 	lockPath := environmentLockPath(absolutePath, environmentID)
 	for {
 		environment, err := openEnvironment(
@@ -509,7 +488,7 @@ func writeJSONFile(path string, value any) (retErr error) {
 }
 
 func environmentPath(environmentsPath string, environmentID string) string {
-	return filepath.Join(environmentsPath, rootsDirectory, environmentID)
+	return filepath.Join(environmentsPath, environmentID)
 }
 
 func environmentRootPath(environmentsPath string, environmentID string) string {
@@ -527,15 +506,11 @@ func environmentMetadataPath(
 }
 
 func environmentLockPath(environmentsPath string, environmentID string) string {
-	return filepath.Join(
-		environmentsPath,
-		locksDirectory,
-		environmentID+lockSuffix,
-	)
+	return filepath.Join(environmentsPath, environmentID+lockSuffix)
 }
 
 func environmentWorkPath(environmentsPath string, environmentID string) string {
-	return filepath.Join(environmentsPath, workDirectory, environmentID)
+	return filepath.Join(environmentsPath, environmentID+workSuffix)
 }
 
 func touch(path string) error {

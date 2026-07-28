@@ -49,16 +49,19 @@ func TestBuildUntarPackage(t *testing.T) {
 		}},
 	}
 	packageID := testID(t, definition)
-	graph := &pkggraph.Graph{
-		Nodes: map[pkggraph.ID]pkggraph.Definition{packageID: definition},
-		Roots: map[string]pkggraph.ID{"bootstrap": packageID},
-	}
+	graph := testGraph(t, map[string]pkggraph.ID{"bootstrap": packageID}, definition)
 	store := openTestStore(t)
 
-	pkg, err := store.Build(context.Background(), graph, packageID)
+	packages, err := store.BuildPackages(
+		context.Background(),
+		graph,
+		[]pkggraph.ID{packageID},
+		BuildOptions{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	pkg := packages[0]
 	if pkg.ID != packageID ||
 		pkg.StorePath != store.packageArtifactPath(packageID, definition.Name) {
 		t.Fatalf("built package = %+v", pkg)
@@ -127,20 +130,14 @@ func TestBuildInsideBootstrapSandbox(t *testing.T) {
 		BuildDeps: []pkggraph.ID{bootstrapID},
 	}
 	helloID := testID(t, helloDefinition)
-	graph := &pkggraph.Graph{
-		Nodes: map[pkggraph.ID]pkggraph.Definition{
-			bootstrapID: bootstrapDefinition,
-			helloID:     helloDefinition,
-		},
-		Roots: map[string]pkggraph.ID{"hello": helloID},
-	}
+	graph := testGraph(t, map[string]pkggraph.ID{"hello": helloID}, bootstrapDefinition, helloDefinition)
 	store := openTestStore(t)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	pkg, err := store.BuildWithOptions(
+	packages, err := store.BuildPackages(
 		context.Background(),
 		graph,
-		helloID,
+		[]pkggraph.ID{helloID},
 		BuildOptions{
 			BuildParallelism: 3,
 			Stdout:           &stdout,
@@ -162,7 +159,11 @@ func TestBuildInsideBootstrapSandbox(t *testing.T) {
 	}
 
 	extracted := t.TempDir()
-	if err := extractArchive(context.Background(), pkg.StorePath, extracted); err != nil {
+	if err := extractArchive(
+		context.Background(),
+		packages[0].StorePath,
+		extracted,
+	); err != nil {
 		t.Fatal(err)
 	}
 	contents, err := os.ReadFile(filepath.Join(extracted, "hello"))

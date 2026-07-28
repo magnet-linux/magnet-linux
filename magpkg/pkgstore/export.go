@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 
 	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
 )
@@ -54,18 +53,19 @@ func (s *Store) ExportArchive(
 		return nil, err
 	}
 
-	staging, err := os.MkdirTemp("", "magpkg-export-")
+	lease, err := acquireTempDir(ctx, s.path, "export-")
 	if err != nil {
 		return nil, fmt.Errorf("create export staging root: %w", err)
 	}
 	defer func() {
-		if err := os.RemoveAll(staging); err != nil {
+		if err := lease.Close(); err != nil {
 			retErr = errors.Join(
 				retErr,
 				fmt.Errorf("remove export staging root: %w", err),
 			)
 		}
 	}()
+	staging := lease.path
 
 	closure, err = s.ExtractRuntimeClosure(ctx, graph, roots, staging)
 	if err != nil {

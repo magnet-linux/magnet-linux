@@ -150,7 +150,7 @@ func runExport(
 	if err != nil {
 		return err
 	}
-	store, err := pkgstore.OpenWithOptions(
+	store, err := pkgstore.Open(
 		storePath,
 		commandStoreOpenOptions(resolveBinaryCacheURL(
 			*binaryCache,
@@ -178,7 +178,7 @@ func runExport(
 	}
 
 	fetchProgress := newFetchProgressRenderer(ctx, stderr)
-	_, buildErr := store.BuildPackagesWithOptions(
+	_, buildErr := store.BuildPackages(
 		ctx,
 		graph,
 		rootIDs,

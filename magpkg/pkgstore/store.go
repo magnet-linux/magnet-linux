@@ -2,6 +2,7 @@ package pkgstore
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -57,14 +58,9 @@ func Init(store string) error {
 	return nil
 }
 
-// Open opens a directory containing supported package-store metadata.
-func Open(store string) (*Store, error) {
-	return OpenWithOptions(store, OpenOptions{})
-}
-
-// OpenWithOptions opens a package store with optional integrations. The binary
-// cache is contacted lazily when a build needs a remote artifact.
-func OpenWithOptions(store string, options OpenOptions) (*Store, error) {
+// Open opens a directory containing supported package-store metadata. The
+// binary cache is contacted lazily when a build needs a remote artifact.
+func Open(store string, options OpenOptions) (*Store, error) {
 	path, err := storePath(store)
 	if err != nil {
 		return nil, err
@@ -143,17 +139,28 @@ func initializeStoreMetadata(store string) (retErr error) {
 	}
 	data = append(data, '\n')
 
-	temporary, err := os.CreateTemp(store, ".magpkg-store-")
+	// The lease lock is freshly reserved, so acquisition does not block.
+	lease, err := acquireTempDir(context.Background(), store, "init-")
 	if err != nil {
 		return err
 	}
-	temporaryPath := temporary.Name()
+	defer func() {
+		retErr = errors.Join(retErr, lease.Close())
+	}()
+	temporaryPath := filepath.Join(lease.path, storeMetadataFilename)
+	temporary, err := os.OpenFile(
+		temporaryPath,
+		os.O_WRONLY|os.O_CREATE|os.O_EXCL,
+		0o600,
+	)
+	if err != nil {
+		return err
+	}
 	temporaryOpen := true
 	defer func() {
 		if temporaryOpen {
 			retErr = errors.Join(retErr, temporary.Close())
 		}
-		retErr = errors.Join(retErr, removeIfExists(temporaryPath))
 	}()
 	if err := temporary.Chmod(0o600); err != nil {
 		return err
@@ -221,12 +228,4 @@ func readStoreMetadata(store string) (storeMetadata, error) {
 		)
 	}
 	return metadata, nil
-}
-
-func removeIfExists(path string) error {
-	err := os.Remove(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	return err
 }

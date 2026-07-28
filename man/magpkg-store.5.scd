@@ -40,18 +40,18 @@ A populated store has this general layout:
 |   |-- <sha256>.lock
 |   `-- <sha256>.tmp
 |-- packages/
-|   |-- <name>-<id>.tar.zst
-|   `-- <id>.tar.zst
-|-- locks/
-|   `-- <id>.lock
-`-- work/
-    `-- <id>/
-        |-- root/
-        |-- build/
-        |-- output/
-        |-- fetch/
-        |-- artifact.tar.zst
-        `-- binary-cache-*.tmp
+|   |-- <[name-]id>.tar.zst
+|   |-- <[name-]id>.lock
+|   `-- <[name-]id>.workdir/
+|       |-- root/
+|       |-- build/
+|       |-- output/
+|       |-- fetch/
+|       |-- artifact.tar.zst
+|       `-- binary-cache-*.tmp
+`-- tmp/
+    |-- <prefix><random>/
+    `-- <prefix><random>.lock
 ```
 
 _.magpkg-store.json_ identifies the directory as a magpkg store and records
@@ -70,8 +70,8 @@ metadata.
 
 Here, *sha256* is a 64-character lowercase hexadecimal source digest and *id*
 is a 52-character lowercase Base32 package ID. Not every entry exists at once.
-Files ending in _.tmp_, package workspaces, and workspace artifacts are
-transient.
+Files ending in _.tmp_, package workspaces, workspace artifacts, and
+everything under _tmp/_ are transient.
 
 The store root and its standard subdirectories are created with mode 0755.
 Store metadata, cached sources, final package archives, and lock files are
@@ -140,10 +140,12 @@ definition, not this archive.
 
 # PACKAGE LOCKS
 
-## locks/<id>.lock
+## packages/<[name-]id>.lock
 
-All operations that can conflict for one package ID coordinate through this
-file:
+All operations that can conflict for one package coordinate through this
+file. The lock shares its _[name-]id_ key with the package archive and
+workspace; the name is part of the definition hashed into the package ID, so
+the key is unique per package.
 
 - a builder holds an exclusive lock while realizing and publishing the package
 - extraction and other package use hold a shared lock
@@ -157,12 +159,27 @@ ready package, an executor can build another ready DAG branch and later observe
 the published archive. This permits multiple magpkg processes to execute the
 same plan without a central work queue.
 
+# TEMPORARY PATHS
+
+## tmp/<prefix><random>
+
+Transient trees too large for system temporary storage, such as sync and
+export staging and store initialization scratch space. The prefix names the
+operation (for example _sync-_, _export-_, or _init-_).
+
+A temporary path only ever exists while its sibling _.lock_ file is held: an
+owner reserves and exclusively locks the lock file before creating the
+directory, and removes the directory before unlinking the lock. Cleanup takes
+the same lock before removing anything, so any entry whose lock can be
+acquired was abandoned by an interrupted operation and may be removed
+regardless of age. See *magpkg-clean*(1) *--tmp*.
+
 # BUILD WORKSPACES
 
-## work/<id>
+## packages/<[name-]id>.workdir
 
 One workspace is used while locally building or downloading a package
-artifact. The operation holds the exclusive _locks/<id>.lock_ while using it.
+artifact. The operation holds the exclusive sibling _.lock_ while using it.
 A local builder removes any workspace left by an earlier attempt before
 starting.
 
@@ -238,7 +255,9 @@ descriptor unless *--no-touch* is used. HEAD requests never refresh them.
 Age-based cleanup uses filesystem modification times, not a database or access
 log. Successful source use touches _fetch/<sha256>_. Package planning and
 extraction touch the package archive. Cleanup considers package archives,
-partial fetches, and top-level build workspaces independently.
+partial fetches, and build workspaces independently. Temporary
+paths under _tmp/_ are not caches, so their cleanup ignores age: liveness is
+proven by a held lock, and every idle entry is removed.
 
 For every recognized fetch digest or package ID, cleanup tries to acquire its
 exclusive lock without waiting. A busy entry is skipped because it is being

@@ -48,7 +48,7 @@ func (store *Store) Sync(
 	roots []pkggraph.ID,
 	destination string,
 	options SyncOptions,
-) (*DestinationResult, error) {
+) (result *DestinationResult, retErr error) {
 	if err := validateStore(store); err != nil {
 		return nil, err
 	}
@@ -71,11 +71,19 @@ func (store *Store) Sync(
 		return nil, err
 	}
 
-	staging, err := os.MkdirTemp("", "magpkg-sync-")
+	lease, err := acquireTempDir(ctx, store.path, "sync-")
 	if err != nil {
 		return nil, fmt.Errorf("create sync staging root: %w", err)
 	}
-	defer os.RemoveAll(staging)
+	defer func() {
+		if err := lease.Close(); err != nil {
+			retErr = errors.Join(
+				retErr,
+				fmt.Errorf("remove sync staging root: %w", err),
+			)
+		}
+	}()
+	staging := lease.path
 	if err := store.ExtractPackages(ctx, graph, closure, staging); err != nil {
 		return nil, fmt.Errorf("compose sync closure: %w", err)
 	}
@@ -85,13 +93,13 @@ func (store *Store) Sync(
 	}
 	packages := make([]syncManifestPackage, 0, len(closure))
 	for _, packageID := range closure {
+		definition, _ := graph.Definition(packageID)
 		packages = append(packages, syncManifestPackage{
 			ID:   packageID,
-			Name: graph.Nodes[packageID].Name,
+			Name: definition.Name,
 		})
 	}
 
-	var result *DestinationResult
 	err = withSyncDestinationLock(
 		ctx,
 		destination,

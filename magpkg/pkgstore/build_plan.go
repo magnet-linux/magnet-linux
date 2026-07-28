@@ -84,9 +84,6 @@ func (s *Store) PlanBuild(
 	if graph == nil {
 		return nil, errors.New("pkgstore: package graph is nil")
 	}
-	if err := graph.Validate(); err != nil {
-		return nil, err
-	}
 	if len(packageIDs) == 0 {
 		return nil, errors.New("pkgstore: build plan has no roots")
 	}
@@ -95,7 +92,7 @@ func (s *Store) PlanBuild(
 		ctx:   ctx,
 		store: s,
 		graph: graph,
-		state: make(map[pkggraph.ID]visitState),
+		seen:  make(map[pkggraph.ID]struct{}),
 	}
 	roots := make([]pkggraph.ID, 0, len(packageIDs))
 	rootSet := make(map[pkggraph.ID]struct{}, len(packageIDs))
@@ -133,12 +130,7 @@ type FetchInputsOptions struct {
 
 // FetchBuildInputs fetches and verifies every source needed by the local-build
 // actions in plan. Sources shared by multiple packages are fetched once.
-func (s *Store) FetchBuildInputs(ctx context.Context, plan *BuildPlan) error {
-	return s.FetchBuildInputsWithOptions(ctx, plan, FetchInputsOptions{})
-}
-
-// FetchBuildInputsWithOptions is FetchBuildInputs with progress reporting.
-func (s *Store) FetchBuildInputsWithOptions(
+func (s *Store) FetchBuildInputs(
 	ctx context.Context,
 	plan *BuildPlan,
 	options FetchInputsOptions,
@@ -225,7 +217,7 @@ func (s *Store) FetchBuildInputsWithOptions(
 				if fetchContext.Err() != nil {
 					return
 				}
-				if _, err := s.FetchWithOptions(
+				if _, err := s.Fetch(
 					fetchContext,
 					task.source,
 					FetchOptions{Progress: options.Progress},
@@ -251,19 +243,11 @@ func (s *Store) FetchBuildInputsWithOptions(
 	return ctx.Err()
 }
 
-type visitState uint8
-
-const (
-	visitUnseen visitState = iota
-	visitActive
-	visitDone
-)
-
 type buildPlanner struct {
 	ctx      context.Context
 	store    *Store
 	graph    *pkggraph.Graph
-	state    map[pkggraph.ID]visitState
+	seen     map[pkggraph.ID]struct{}
 	packages []PlannedPackage
 }
 
@@ -271,19 +255,13 @@ func (p *buildPlanner) visit(packageID pkggraph.ID) error {
 	if err := p.ctx.Err(); err != nil {
 		return err
 	}
-	switch p.state[packageID] {
-	case visitActive:
-		return fmt.Errorf("pkgstore: dependency cycle through package %s", packageID)
-	case visitDone:
+	if _, ok := p.seen[packageID]; ok {
 		return nil
 	}
 
-	definition, ok := p.graph.Nodes[packageID]
+	definition, ok := p.graph.Definition(packageID)
 	if !ok {
 		return fmt.Errorf("pkgstore: package %q is not in the graph", packageID)
-	}
-	if err := pkggraph.ValidateIdentity(packageID, definition); err != nil {
-		return err
 	}
 
 	available, err := p.store.packageAvailableForUse(
@@ -303,17 +281,16 @@ func (p *buildPlanner) visit(packageID pkggraph.ID) error {
 	}
 	prerequisites = deduplicateIDs(prerequisites)
 
-	p.state[packageID] = visitActive
+	p.seen[packageID] = struct{}{}
 	for _, dependency := range prerequisites {
 		if err := p.visit(dependency); err != nil {
 			return fmt.Errorf("package %s dependency %s: %w", packageID, dependency, err)
 		}
 	}
-	p.state[packageID] = visitDone
 	p.packages = append(p.packages, PlannedPackage{
 		ID:            packageID,
-		Definition:    pkggraph.CloneDefinition(definition),
-		Prerequisites: slices.Clone(prerequisites),
+		Definition:    definition,
+		Prerequisites: prerequisites,
 		Disposition:   disposition,
 	})
 	return nil
@@ -327,15 +304,9 @@ func validateBuildPlan(plan *BuildPlan) error {
 		return errors.New("pkgstore: build plan has no roots")
 	}
 	seen := make(map[pkggraph.ID]struct{}, len(plan.packages))
-	for index, planned := range plan.packages {
+	for _, planned := range plan.packages {
 		if _, ok := seen[planned.ID]; ok {
 			return fmt.Errorf("pkgstore: package %s occurs more than once in build plan", planned.ID)
-		}
-		if err := pkggraph.ValidateIdentity(
-			planned.ID,
-			planned.Definition,
-		); err != nil {
-			return fmt.Errorf("pkgstore: build plan package %d: %w", index, err)
 		}
 		switch planned.Disposition {
 		case BuildDispositionAvailable, BuildDispositionNeedsBuild:

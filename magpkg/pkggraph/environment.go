@@ -18,7 +18,9 @@ var defaultBuildEnvironment = map[string]string{
 	"TZ":           "UTC",
 }
 
-func resolveBuildEnvironment(overrides map[string]string) map[string]string {
+// ResolveBuildEnvironment returns a new map containing the deterministic
+// defaults overlaid with overrides.
+func ResolveBuildEnvironment(overrides map[string]string) map[string]string {
 	environment := make(
 		map[string]string,
 		len(defaultBuildEnvironment)+len(overrides),
@@ -30,12 +32,6 @@ func resolveBuildEnvironment(overrides map[string]string) map[string]string {
 		environment[name] = value
 	}
 	return environment
-}
-
-// ResolveBuildEnvironment returns a new map containing the deterministic
-// defaults overlaid with overrides.
-func ResolveBuildEnvironment(overrides map[string]string) map[string]string {
-	return resolveBuildEnvironment(overrides)
 }
 
 func validateBuildEnvironment(environment map[string]string) error {

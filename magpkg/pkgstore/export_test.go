@@ -33,13 +33,7 @@ func TestExportArchiveComposesRuntimeClosure(t *testing.T) {
 		writeSyncTestFile(t, path, "bin/tool", "root\n", 0o755)
 		writeSyncTestFile(t, path, "run.sh", "#!/bin/sh\n", 0o755)
 	})
-	graph := &pkggraph.Graph{
-		Nodes: map[pkggraph.ID]pkggraph.Definition{
-			dependencyID: dependency,
-			rootID:       root,
-		},
-		Roots: map[string]pkggraph.ID{"root": rootID},
-	}
+	graph := testGraph(t, map[string]pkggraph.ID{"root": rootID}, dependency, root)
 
 	var output bytes.Buffer
 	closure, err := store.ExportArchive(
@@ -86,10 +80,7 @@ func TestExportArchiveRequiresExistingArtifacts(t *testing.T) {
 		Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone},
 	}
 	packageID := testID(t, definition)
-	graph := &pkggraph.Graph{
-		Nodes: map[pkggraph.ID]pkggraph.Definition{packageID: definition},
-		Roots: map[string]pkggraph.ID{"missing": packageID},
-	}
+	graph := testGraph(t, map[string]pkggraph.ID{"missing": packageID}, definition)
 
 	var output bytes.Buffer
 	_, err := store.ExportArchive(

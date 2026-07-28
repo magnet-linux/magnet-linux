@@ -32,7 +32,7 @@ func TestCleanFetchesRemovesExpiredAndRetainsTouched(t *testing.T) {
 	gotPath, err := store.Fetch(context.Background(), pkggraph.Fetch{
 		Filename: "retained",
 		SHA256:   retainedDigest,
-	})
+	}, pkgstore.FetchOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestCleanFetchesRemovesExpiredAndRetainsTouched(t *testing.T) {
 		t.Fatalf("Fetch() path = %q, want %q", gotPath, retainedPath)
 	}
 
-	if err := store.CleanFetches(context.Background(), time.Hour); err != nil {
+	if err := store.CleanFetches(context.Background(), time.Hour, pkgstore.CleanOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	assertPathMissing(t, expiredPath)
@@ -67,7 +67,7 @@ func TestCleanFetchesSkipsActiveLock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := store.CleanFetches(context.Background(), time.Hour); err != nil {
+	if err := store.CleanFetches(context.Background(), time.Hour, pkgstore.CleanOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	assertRegularFile(t, cachedPath)
@@ -80,7 +80,7 @@ func TestCleanFetchesSkipsActiveLock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := store.CleanFetches(context.Background(), time.Hour); err != nil {
+	if err := store.CleanFetches(context.Background(), time.Hour, pkgstore.CleanOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	assertPathMissing(t, cachedPath)
@@ -113,7 +113,7 @@ func TestCleanFetchesPartialsAndUnknownEntries(t *testing.T) {
 	}
 
 	var events []pkgstore.CleanEvent
-	if err := store.CleanFetchesWithOptions(
+	if err := store.CleanFetches(
 		context.Background(),
 		time.Hour,
 		pkgstore.CleanOptions{
@@ -144,7 +144,7 @@ func TestCleanFetchesAllIgnoresFutureModificationTime(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := store.CleanFetches(context.Background(), 0); err != nil {
+	if err := store.CleanFetches(context.Background(), 0, pkgstore.CleanOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	assertPathMissing(t, cachedPath)
@@ -152,23 +152,23 @@ func TestCleanFetchesAllIgnoresFutureModificationTime(t *testing.T) {
 
 func TestCleanFetchesValidationAndMissingCache(t *testing.T) {
 	store := newTestStore(t)
-	if err := store.CleanFetches(context.Background(), time.Hour); err != nil {
+	if err := store.CleanFetches(context.Background(), time.Hour, pkgstore.CleanOptions{}); err != nil {
 		t.Fatalf("CleanFetches() on missing cache: %v", err)
 	}
 
-	if err := store.CleanFetches(context.Background(), -time.Second); err == nil ||
+	if err := store.CleanFetches(context.Background(), -time.Second, pkgstore.CleanOptions{}); err == nil ||
 		!strings.Contains(err.Error(), "must not be negative") {
 		t.Fatalf("negative maxAge error = %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := store.CleanFetches(ctx, time.Hour); !errors.Is(err, context.Canceled) {
+	if err := store.CleanFetches(ctx, time.Hour, pkgstore.CleanOptions{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled CleanFetches() error = %v, want context.Canceled", err)
 	}
 
 	var nilStore *pkgstore.Store
-	if err := nilStore.CleanFetches(context.Background(), time.Hour); err == nil ||
+	if err := nilStore.CleanFetches(context.Background(), time.Hour, pkgstore.CleanOptions{}); err == nil ||
 		!strings.Contains(err.Error(), "store is not initialized") {
 		t.Fatalf("nil store error = %v", err)
 	}
@@ -190,7 +190,7 @@ func fetchTestSource(
 		Filename: filename,
 		SHA256:   sha256Hex(content),
 		URLs:     []string{sourceURL},
-	})
+	}, pkgstore.FetchOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

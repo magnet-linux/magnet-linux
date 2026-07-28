@@ -8,7 +8,7 @@ import (
 func TestResolveBuildEnvironmentAppliesOverridesWithoutMutatingDefaults(
 	t *testing.T,
 ) {
-	environment := resolveBuildEnvironment(map[string]string{
+	environment := ResolveBuildEnvironment(map[string]string{
 		"PATH":   "/bin",
 		"CUSTOM": "value",
 	})

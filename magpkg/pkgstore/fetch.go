@@ -62,12 +62,7 @@ type FetchOptions struct {
 //
 // The URLs are attempted in order. Fetch currently supports file, http, and
 // https URLs. The SHA-256 digest is always verified before a file is returned.
-func (s *Store) Fetch(ctx context.Context, fetch pkggraph.Fetch) (path string, retErr error) {
-	return s.FetchWithOptions(ctx, fetch, FetchOptions{})
-}
-
-// FetchWithOptions is Fetch with progress reporting.
-func (s *Store) FetchWithOptions(
+func (s *Store) Fetch(
 	ctx context.Context,
 	fetch pkggraph.Fetch,
 	options FetchOptions,

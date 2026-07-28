@@ -15,10 +15,7 @@ func TestExtractPackagesUsesOrderedOverlay(t *testing.T) {
 	firstID := testID(t, firstDefinition)
 	secondDefinition := pkggraph.Definition{Name: "second", Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone}}
 	secondID := testID(t, secondDefinition)
-	graph := &pkggraph.Graph{Nodes: map[pkggraph.ID]pkggraph.Definition{
-		firstID:  firstDefinition,
-		secondID: secondDefinition,
-	}}
+	graph := testGraph(t, nil, firstDefinition, secondDefinition)
 	writeArchive := func(
 		id pkggraph.ID,
 		name string,

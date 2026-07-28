@@ -264,7 +264,7 @@ func validatePackageArchive(ctx context.Context, archivePath string) error {
 
 		switch header.Typeflag {
 		case tar.TypeDir, tar.TypeSymlink:
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
 			written, err := copyContext(
 				ctx,
 				io.Discard,
@@ -294,7 +294,7 @@ func validatePackageArchive(ctx context.Context, archivePath string) error {
 					err,
 				)
 			}
-		case tar.TypeXGlobalHeader, tar.TypeXHeader:
+		case tar.TypeXGlobalHeader:
 		default:
 			return fmt.Errorf(
 				"unsupported package archive entry type %d",
@@ -397,7 +397,7 @@ func extractArchiveEntry(
 		}
 		return os.Chmod(target, header.FileInfo().Mode())
 
-	case tar.TypeReg, tar.TypeRegA:
+	case tar.TypeReg:
 		if err := removeArchiveTarget(target); err != nil {
 			return err
 		}
@@ -447,7 +447,7 @@ func extractArchiveEntry(
 		}
 		return os.Link(linkTarget, target)
 
-	case tar.TypeXGlobalHeader, tar.TypeXHeader:
+	case tar.TypeXGlobalHeader:
 		return nil
 
 	default:

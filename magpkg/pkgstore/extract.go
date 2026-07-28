@@ -31,27 +31,18 @@ func (s *Store) ExtractPackages(
 	if graph == nil {
 		return errors.New("pkgstore: package graph is nil")
 	}
-	if err := graph.Validate(); err != nil {
-		return err
-	}
 	if destination == "" {
 		return errors.New("pkgstore: package extraction destination is empty")
 	}
 
 	references := make([]packageReference, 0, len(packageIDs))
 	for _, packageID := range packageIDs {
-		definition, ok := graph.Nodes[packageID]
+		definition, ok := graph.Definition(packageID)
 		if !ok {
 			return fmt.Errorf(
 				"pkgstore: package %q is not in the graph",
 				packageID,
 			)
-		}
-		if err := pkggraph.ValidateIdentity(
-			packageID,
-			definition,
-		); err != nil {
-			return err
 		}
 		references = append(references, packageReference{
 			id:   packageID,

@@ -27,35 +27,20 @@ func (s *Store) substituteBuildClosure(
 	if graph == nil {
 		return errors.New("pkgstore: package graph is nil")
 	}
-	if err := graph.Validate(); err != nil {
-		return err
-	}
 	if s.binaryCache == nil && !noBuild {
 		return nil
 	}
 
-	type visitState uint8
-	const (
-		visitUnseen visitState = iota
-		visitActive
-		visitDone
-	)
-	state := make(map[pkggraph.ID]visitState)
+	seen := make(map[pkggraph.ID]struct{})
 	var visit func(pkggraph.ID) error
 	visit = func(packageID pkggraph.ID) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		switch state[packageID] {
-		case visitActive:
-			return fmt.Errorf(
-				"pkgstore: dependency cycle through package %s",
-				packageID,
-			)
-		case visitDone:
+		if _, ok := seen[packageID]; ok {
 			return nil
 		}
-		definition, ok := graph.Nodes[packageID]
+		definition, ok := graph.Definition(packageID)
 		if !ok {
 			return fmt.Errorf(
 				"pkgstore: package %q is not in the graph",
@@ -63,7 +48,7 @@ func (s *Store) substituteBuildClosure(
 			)
 		}
 
-		state[packageID] = visitActive
+		seen[packageID] = struct{}{}
 		available, err := s.packageAvailableForUse(
 			ctx,
 			packageID,
@@ -111,7 +96,6 @@ func (s *Store) substituteBuildClosure(
 				)
 			}
 		}
-		state[packageID] = visitDone
 		return nil
 	}
 

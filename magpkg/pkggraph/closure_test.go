@@ -6,51 +6,46 @@ import (
 )
 
 func TestRuntimeClosureIsDependencyFirstAndExcludesBuildDeps(t *testing.T) {
-	sharedDefinition := Definition{
+	var builder Builder
+	add := func(definition Definition) ID {
+		t.Helper()
+		id, err := builder.AddDefinition(definition)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+
+	sharedID := add(Definition{
 		Name:  "shared",
 		Build: BuildSpec{Kind: BuildNone},
-	}
-	sharedID := testGraphID(t, sharedDefinition)
-	firstDefinition := Definition{
+	})
+	firstID := add(Definition{
 		Name:    "first",
 		Build:   BuildSpec{Kind: BuildNone},
 		RunDeps: []ID{sharedID},
-	}
-	firstID := testGraphID(t, firstDefinition)
-	secondDefinition := Definition{
+	})
+	secondID := add(Definition{
 		Name:  "second",
 		Build: BuildSpec{Kind: BuildNone},
-	}
-	secondID := testGraphID(t, secondDefinition)
-	buildOnlyDefinition := Definition{
+	})
+	buildOnlyID := add(Definition{
 		Name:  "build-only",
 		Build: BuildSpec{Kind: BuildNone},
-	}
-	buildOnlyID := testGraphID(t, buildOnlyDefinition)
-	rootDefinition := Definition{
+	})
+	rootID := add(Definition{
 		Name:      "root",
 		Build:     BuildSpec{Kind: BuildNone},
 		RunDeps:   []ID{firstID, secondID},
 		BuildDeps: []ID{buildOnlyID},
-	}
-	rootID := testGraphID(t, rootDefinition)
-	otherRootDefinition := Definition{
+	})
+	otherRootID := add(Definition{
 		Name:    "other-root",
 		Build:   BuildSpec{Kind: BuildNone},
 		RunDeps: []ID{secondID},
-	}
-	otherRootID := testGraphID(t, otherRootDefinition)
+	})
 
-	graph := &Graph{
-		Nodes: map[ID]Definition{
-			sharedID:    sharedDefinition,
-			firstID:     firstDefinition,
-			secondID:    secondDefinition,
-			buildOnlyID: buildOnlyDefinition,
-			rootID:      rootDefinition,
-			otherRootID: otherRootDefinition,
-		},
-	}
+	graph := builder.Graph()
 	got, err := graph.RuntimeClosure(rootID, otherRootID, rootID)
 	if err != nil {
 		t.Fatal(err)
@@ -67,11 +62,23 @@ func TestRuntimeClosureIsDependencyFirstAndExcludesBuildDeps(t *testing.T) {
 	}
 }
 
-func testGraphID(t *testing.T, definition Definition) ID {
-	t.Helper()
-	id, err := IDForDefinition(definition)
+func TestRuntimeClosureRejectsUnknownRoot(t *testing.T) {
+	var builder Builder
+	if _, err := builder.AddDefinition(Definition{
+		Build: BuildSpec{Kind: BuildNone},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	graph := builder.Graph()
+
+	unknown, err := IDForDefinition(Definition{
+		Name:  "unknown",
+		Build: BuildSpec{Kind: BuildNone},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return id
+	if _, err := graph.RuntimeClosure(unknown); err == nil {
+		t.Fatal("RuntimeClosure() accepted a root outside the graph")
+	}
 }

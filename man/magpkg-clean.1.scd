@@ -6,7 +6,7 @@ magpkg-clean - remove old cached magpkg state
 
 # SYNOPSIS
 
-*magpkg clean* (*--all* | *--fetches* | *--packages* | *--environments*) [options]
+*magpkg clean* (*--all* | *--fetches* | *--packages* | *--environments* | *--tmp*) [options]
 
 # DESCRIPTION
 
@@ -25,9 +25,9 @@ path.
 # OPTIONS
 
 *--all*
-	Select fetches, packages, and shell environments. This selects categories
-	only; it does not mean an age of zero and may be combined with
-	*--older-than*.
+	Select fetches, packages, shell environments, and temporary files. This
+	selects categories only; it does not mean an age of zero and may be
+	combined with *--older-than*.
 
 *--fetches*
 	Remove old verified source files, partial fetches, and associated idle
@@ -42,6 +42,13 @@ path.
 	workspaces, and associated idle lock files. Active launchers retain a
 	shared lease and are skipped. This category does not require the package
 	store to exist.
+
+*--tmp*
+	Remove temporary files and directories abandoned by interrupted
+	operations, such as sync and export staging trees. Live temporary paths
+	hold an exclusive lock and are skipped. Because temporary paths are
+	never reusable, this category ignores *--older-than* and removes every
+	idle entry.
 
 *--older-than* _AGE_
 	Remove selected state unused for at least _AGE_. The default is *7d*.

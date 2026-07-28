@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"reflect"
 
 	gojsonnet "github.com/andrewchambers/go-jsonnet"
 	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
@@ -62,7 +61,6 @@ func EvaluateFile(
 	if err != nil {
 		return nil, fmt.Errorf("read roots from %q: %w", filename, err)
 	}
-	roots := make(map[string]pkggraph.ID, len(rootNames))
 	for _, rootName := range rootNames {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -83,17 +81,11 @@ func EvaluateFile(
 		if err != nil {
 			return nil, err
 		}
-		roots[rootName] = id
+		if err := materializer.builder.SetRoot(rootName, id); err != nil {
+			return nil, err
+		}
 	}
-
-	graph := &pkggraph.Graph{
-		Nodes: materializer.nodes,
-		Roots: roots,
-	}
-	if err := graph.Validate(); err != nil {
-		return nil, err
-	}
-	return graph, nil
+	return materializer.builder.Graph(), nil
 }
 
 // MaterializeValues materializes package object values and their transitive
@@ -121,20 +113,12 @@ func MaterializeValues(
 		}
 		packageIDs[index] = id
 	}
-	graph := &pkggraph.Graph{
-		Nodes: materializer.nodes,
-		Roots: make(map[string]pkggraph.ID),
-	}
-	if err := graph.Validate(); err != nil {
-		return nil, nil, err
-	}
-	return graph, packageIDs, nil
+	return materializer.builder.Graph(), packageIDs, nil
 }
 
 func newGraphMaterializer(ctx context.Context) graphMaterializer {
 	return graphMaterializer{
 		ctx:          ctx,
-		nodes:        make(map[pkggraph.ID]pkggraph.Definition),
 		materialized: make(map[gojsonnet.ObjectToken]materializedObject),
 		packageFieldSet: stringSet(
 			"name",
@@ -151,7 +135,7 @@ func newGraphMaterializer(ctx context.Context) graphMaterializer {
 
 type graphMaterializer struct {
 	ctx             context.Context
-	nodes           map[pkggraph.ID]pkggraph.Definition
+	builder         pkggraph.Builder
 	materialized    map[gojsonnet.ObjectToken]materializedObject
 	packageFieldSet map[string]struct{}
 	buildFieldSet   map[string]struct{}
@@ -201,19 +185,10 @@ func (m *graphMaterializer) packageID(
 	if err != nil {
 		return "", err
 	}
-	definition, err = pkggraph.NormalizeDefinition(definition)
+	id, err := m.builder.AddDefinition(definition)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", path, err)
 	}
-
-	id, err := pkggraph.IDForDefinition(definition)
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", path, err)
-	}
-	if previous, ok := m.nodes[id]; ok && !reflect.DeepEqual(previous, definition) {
-		return "", fmt.Errorf("%s: package ID collision for %s", path, id)
-	}
-	m.nodes[id] = definition
 	m.materialized[token] = materializedObject{
 		path: path,
 		id:   id,

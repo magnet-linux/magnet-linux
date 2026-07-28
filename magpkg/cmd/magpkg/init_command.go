@@ -47,7 +47,7 @@ func runInit(args []string, stdout io.Writer, stderr io.Writer) error {
 	if err := pkgstore.Init(storePath); err != nil {
 		return fmt.Errorf("initialize store %q: %w", storePath, err)
 	}
-	store, err := pkgstore.Open(storePath)
+	store, err := pkgstore.Open(storePath, pkgstore.OpenOptions{})
 	if err != nil {
 		return fmt.Errorf("open initialized store %q: %w", storePath, err)
 	}

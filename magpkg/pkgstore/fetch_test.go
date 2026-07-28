@@ -35,7 +35,7 @@ func TestFetchFileURL(t *testing.T) {
 	if err := pkgstore.Init(storePath); err != nil {
 		t.Fatal(err)
 	}
-	store, err := pkgstore.Open(storePath)
+	store, err := pkgstore.Open(storePath, pkgstore.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestFetchFileURL(t *testing.T) {
 		Filename: "source.tar.gz",
 		SHA256:   strings.ToUpper(digest),
 		URLs:     []string{sourceURL},
-	})
+	}, pkgstore.FetchOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestFetchFileURL(t *testing.T) {
 	secondPath, err := store.Fetch(context.Background(), pkggraph.Fetch{
 		Filename: "source.tar.gz",
 		SHA256:   digest,
-	})
+	}, pkgstore.FetchOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestFetchProgressReportsTransferAndCacheHit(t *testing.T) {
 	}
 
 	var first []pkgstore.FetchProgress
-	if _, err := store.FetchWithOptions(
+	if _, err := store.Fetch(
 		context.Background(),
 		source,
 		pkgstore.FetchOptions{
@@ -128,7 +128,7 @@ func TestFetchProgressReportsTransferAndCacheHit(t *testing.T) {
 	)
 
 	var second []pkgstore.FetchProgress
-	if _, err := store.FetchWithOptions(
+	if _, err := store.Fetch(
 		context.Background(),
 		source,
 		pkgstore.FetchOptions{
@@ -192,7 +192,7 @@ func TestFetchHTTPFallsBackAfterChecksumMismatch(t *testing.T) {
 		URLs:     []string{server.URL + "/bad", server.URL + "/good"},
 	}
 	var events []pkgstore.FetchProgress
-	cachedPath, err := store.FetchWithOptions(
+	cachedPath, err := store.Fetch(
 		context.Background(),
 		fetch,
 		pkgstore.FetchOptions{
@@ -266,7 +266,7 @@ func TestFetchHTTPUsesConfiguredClient(t *testing.T) {
 	if err := pkgstore.Init(path); err != nil {
 		t.Fatal(err)
 	}
-	store, err := pkgstore.OpenWithOptions(path, pkgstore.OpenOptions{
+	store, err := pkgstore.Open(path, pkgstore.OpenOptions{
 		HTTPClient: client,
 	})
 	if err != nil {
@@ -277,7 +277,7 @@ func TestFetchHTTPUsesConfiguredClient(t *testing.T) {
 		Filename: "archive",
 		SHA256:   sha256Hex(content),
 		URLs:     []string{"https://source.invalid/archive"},
-	})
+	}, pkgstore.FetchOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +342,7 @@ func TestFetchReplacesInvalidCacheEntry(t *testing.T) {
 		Filename: "source",
 		SHA256:   digest,
 		URLs:     []string{server.URL},
-	})
+	}, pkgstore.FetchOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +371,7 @@ func TestFetchAllURLsFailWithoutPublishingPartial(t *testing.T) {
 			"ipfs://example",
 			"file:///definitely/not/a/magpkg/source",
 		},
-	})
+	}, pkgstore.FetchOptions{})
 	if err == nil {
 		t.Fatal("Fetch() succeeded, want an error")
 	}
@@ -422,7 +422,7 @@ func TestFetchWaitForLockHonorsContext(t *testing.T) {
 		Filename: "source",
 		SHA256:   digest,
 		URLs:     []string{sourceURL},
-	})
+	}, pkgstore.FetchOptions{})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error = %v, want context.DeadlineExceeded", err)
 	}
@@ -465,7 +465,7 @@ func TestFetchValidatesDefinition(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := store.Fetch(context.Background(), test.fetch)
+			_, err := store.Fetch(context.Background(), test.fetch, pkgstore.FetchOptions{})
 			if err == nil || !strings.Contains(err.Error(), test.wantError) {
 				t.Fatalf("error = %v, want error containing %q", err, test.wantError)
 			}
@@ -479,7 +479,7 @@ func newTestStore(t *testing.T) *pkgstore.Store {
 	if err := pkgstore.Init(path); err != nil {
 		t.Fatal(err)
 	}
-	store, err := pkgstore.Open(path)
+	store, err := pkgstore.Open(path, pkgstore.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

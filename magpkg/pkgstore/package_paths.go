@@ -12,10 +12,9 @@ import (
 
 const (
 	packageDirectoryName  = "packages"
-	buildLockDirectory    = "locks"
-	buildWorkDirectory    = "work"
 	packageArtifactSuffix = ".tar.zst"
-	buildLockSuffix       = ".lock"
+	packageLockSuffix     = ".lock"
+	packageWorkSuffix     = ".workdir"
 )
 
 func validateStore(store *Store) error {
@@ -25,12 +24,23 @@ func validateStore(store *Store) error {
 	return nil
 }
 
-func packageArtifactFilename(packageID pkggraph.ID, packageName string) string {
-	filename := string(packageID) + packageArtifactSuffix
+// packageKey is the shared `[name-]id` base of a package's artifact, lock,
+// and workspace names. The name is part of the definition hashed into the
+// package ID, so the key is unique per package.
+func packageKey(packageID pkggraph.ID, packageName string) string {
+	key := string(packageID)
 	if packageName != "" {
-		filename = packageName + "-" + filename
+		key = packageName + "-" + key
 	}
-	return filename
+	return key
+}
+
+func packageArtifactFilename(packageID pkggraph.ID, packageName string) string {
+	return packageKey(packageID, packageName) + packageArtifactSuffix
+}
+
+func (s *Store) packageDirectory() string {
+	return filepath.Join(s.path, packageDirectoryName)
 }
 
 func (s *Store) packageArtifactPath(
@@ -38,22 +48,29 @@ func (s *Store) packageArtifactPath(
 	packageName string,
 ) string {
 	return filepath.Join(
-		s.path,
-		packageDirectoryName,
+		s.packageDirectory(),
 		packageArtifactFilename(packageID, packageName),
 	)
 }
 
-func (s *Store) packageLockPath(packageID pkggraph.ID) string {
+func (s *Store) packageLockPath(
+	packageID pkggraph.ID,
+	packageName string,
+) string {
 	return filepath.Join(
-		s.path,
-		buildLockDirectory,
-		string(packageID)+buildLockSuffix,
+		s.packageDirectory(),
+		packageKey(packageID, packageName)+packageLockSuffix,
 	)
 }
 
-func (s *Store) packageWorkPath(packageID pkggraph.ID) string {
-	return filepath.Join(s.path, buildWorkDirectory, string(packageID))
+func (s *Store) packageWorkPath(
+	packageID pkggraph.ID,
+	packageName string,
+) string {
+	return filepath.Join(
+		s.packageDirectory(),
+		packageKey(packageID, packageName)+packageWorkSuffix,
+	)
 }
 
 func (s *Store) packageAvailable(
@@ -73,13 +90,10 @@ func (s *Store) packageAvailableForUse(
 	if err != nil || !available {
 		return available, err
 	}
-	if err := os.MkdirAll(
-		filepath.Join(s.path, buildLockDirectory),
-		0o755,
-	); err != nil {
-		return false, fmt.Errorf("create package lock directory: %w", err)
+	if err := os.MkdirAll(s.packageDirectory(), 0o755); err != nil {
+		return false, fmt.Errorf("create package directory: %w", err)
 	}
-	lock, err := acquireSharedLock(ctx, s.packageLockPath(packageID))
+	lock, err := acquireSharedLock(ctx, s.packageLockPath(packageID, packageName))
 	if err != nil {
 		return false, err
 	}
@@ -103,13 +117,10 @@ func (s *Store) usePackageArtifact(
 	packageName string,
 	use func(string) error,
 ) (retErr error) {
-	if err := os.MkdirAll(
-		filepath.Join(s.path, buildLockDirectory),
-		0o755,
-	); err != nil {
-		return fmt.Errorf("create package lock directory: %w", err)
+	if err := os.MkdirAll(s.packageDirectory(), 0o755); err != nil {
+		return fmt.Errorf("create package directory: %w", err)
 	}
-	lock, err := acquireSharedLock(ctx, s.packageLockPath(packageID))
+	lock, err := acquireSharedLock(ctx, s.packageLockPath(packageID, packageName))
 	if err != nil {
 		return err
 	}

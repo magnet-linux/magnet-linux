@@ -18,55 +18,30 @@ func (graph *Graph) RuntimeClosure(
 		return nil, errors.New("pkggraph: runtime closure has no roots")
 	}
 
-	type visitState uint8
-	const (
-		visitUnseen visitState = iota
-		visitActive
-		visitDone
-	)
-	state := make(map[ID]visitState)
+	// A sealed graph's dependencies are always present and acyclic, so only
+	// the requested roots need membership checks.
+	seen := make(map[ID]struct{})
 	order := make([]ID, 0)
-	var visit func(ID) error
-	visit = func(packageID ID) error {
-		switch state[packageID] {
-		case visitActive:
-			return fmt.Errorf(
-				"pkggraph: runtime dependency cycle through package %s",
-				packageID,
-			)
-		case visitDone:
-			return nil
+	var visit func(ID)
+	visit = func(packageID ID) {
+		if _, ok := seen[packageID]; ok {
+			return
 		}
-		definition, ok := graph.Nodes[packageID]
-		if !ok {
-			return fmt.Errorf(
-				"pkggraph: package %q is not in the graph",
-				packageID,
-			)
+		seen[packageID] = struct{}{}
+		for _, dependency := range graph.nodes[packageID].RunDeps {
+			visit(dependency)
 		}
-		if err := ValidateIdentity(packageID, definition); err != nil {
-			return err
-		}
-		state[packageID] = visitActive
-		for _, dependency := range definition.RunDeps {
-			if err := visit(dependency); err != nil {
-				return fmt.Errorf(
-					"package %s runtime dependency %s: %w",
-					packageID,
-					dependency,
-					err,
-				)
-			}
-		}
-		state[packageID] = visitDone
 		order = append(order, packageID)
-		return nil
 	}
 
 	for _, root := range roots {
-		if err := visit(root); err != nil {
-			return nil, err
+		if _, ok := graph.nodes[root]; !ok {
+			return nil, fmt.Errorf(
+				"pkggraph: package %q is not in the graph",
+				root,
+			)
 		}
+		visit(root)
 	}
 	return order, nil
 }

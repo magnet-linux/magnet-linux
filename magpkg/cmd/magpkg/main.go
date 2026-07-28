@@ -56,15 +56,6 @@ func main() {
 	}
 }
 
-func runCLI(
-	ctx context.Context,
-	args []string,
-	stdout io.Writer,
-	stderr io.Writer,
-) error {
-	return runCLIWithInput(ctx, args, os.Stdin, stdout, stderr)
-}
-
 func runCLIWithInput(
 	ctx context.Context,
 	args []string,
@@ -131,10 +122,15 @@ func runClean(
 		false,
 		"clean materialized shell environments and workspaces",
 	)
+	cleanTemp := flags.Bool(
+		"tmp",
+		false,
+		"clean abandoned temporary files regardless of age",
+	)
 	cleanAll := flags.Bool(
 		"all",
 		false,
-		"clean fetches, packages, and shell environments",
+		"clean fetches, packages, shell environments, and temporary files",
 	)
 	var olderThan cleanAgeFlag
 	flags.Var(
@@ -145,7 +141,7 @@ func runClean(
 	flags.Usage = func() {
 		fmt.Fprintln(
 			stderr,
-			"usage: magpkg clean (--all | --fetches | --packages | --environments) [options]",
+			"usage: magpkg clean (--all | --fetches | --packages | --environments | --tmp) [options]",
 		)
 		fmt.Fprintln(stderr, "")
 		fmt.Fprintln(
@@ -165,16 +161,18 @@ func runClean(
 		return errors.New("clean does not accept positional arguments")
 	}
 
-	if !*cleanAll && !*cleanFetches && !*cleanPackages && !*cleanEnvironments {
+	if !*cleanAll && !*cleanFetches && !*cleanPackages &&
+		!*cleanEnvironments && !*cleanTemp {
 		return errors.New(
 			"clean requires at least one of --all, --fetches, --packages, " +
-				"or --environments",
+				"--environments, or --tmp",
 		)
 	}
 	if *cleanAll {
 		*cleanFetches = true
 		*cleanPackages = true
 		*cleanEnvironments = true
+		*cleanTemp = true
 	}
 	cleanAge := defaultCleanAge
 	if olderThan.set {
@@ -189,12 +187,12 @@ func runClean(
 			fmt.Fprintf(stdout, "cleaned %s %s\n", event.Kind, event.Path)
 		},
 	}
-	if *cleanFetches || *cleanPackages {
+	if *cleanFetches || *cleanPackages || *cleanTemp {
 		storePath, err := resolveStorePath(*storeFlag)
 		if err != nil {
 			return err
 		}
-		store, err := pkgstore.Open(storePath)
+		store, err := pkgstore.Open(storePath, pkgstore.OpenOptions{})
 		if err != nil {
 			return fmt.Errorf(
 				"open store %q (run `magpkg init` first): %w",
@@ -203,7 +201,7 @@ func runClean(
 			)
 		}
 		if *cleanFetches {
-			if err := store.CleanFetchesWithOptions(
+			if err := store.CleanFetches(
 				ctx,
 				cleanAge,
 				cleanOptions,
@@ -212,12 +210,17 @@ func runClean(
 			}
 		}
 		if *cleanPackages {
-			if err := store.CleanPackagesWithOptions(
+			if err := store.CleanPackages(
 				ctx,
 				cleanAge,
 				cleanOptions,
 			); err != nil {
 				return fmt.Errorf("clean packages: %w", err)
+			}
+		}
+		if *cleanTemp {
+			if err := store.CleanTempFiles(ctx, cleanOptions); err != nil {
+				return fmt.Errorf("clean temporary files: %w", err)
 			}
 		}
 	}

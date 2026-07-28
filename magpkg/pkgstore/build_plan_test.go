@@ -32,11 +32,7 @@ func TestPlanBuildIncludesBuildDependenciesOnlyWhenNeeded(t *testing.T) {
 		BuildDeps: []pkggraph.ID{buildID},
 	}
 	rootID := testID(t, rootDefinition)
-	graph := &pkggraph.Graph{Nodes: map[pkggraph.ID]pkggraph.Definition{
-		runtimeID: runtimeDefinition,
-		buildID:   buildDefinition,
-		rootID:    rootDefinition,
-	}}
+	graph := testGraph(t, nil, runtimeDefinition, buildDefinition, rootDefinition)
 
 	plan, err := store.PlanBuild(context.Background(), graph, rootID)
 	if err != nil {
@@ -64,19 +60,6 @@ func TestPlanBuildIncludesBuildDependenciesOnlyWhenNeeded(t *testing.T) {
 	}
 }
 
-func TestPlanBuildRejectsDefinitionWithWrongID(t *testing.T) {
-	store := openTestStore(t)
-	definition := pkggraph.Definition{Name: "package", Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone}}
-	wrongID := pkggraph.ID(strings.Repeat("a", pkggraph.IDLength))
-	graph := &pkggraph.Graph{Nodes: map[pkggraph.ID]pkggraph.Definition{
-		wrongID: definition,
-	}}
-	_, err := store.PlanBuild(context.Background(), graph, wrongID)
-	if err == nil {
-		t.Fatal("PlanBuild accepted an invalid package ID")
-	}
-}
-
 func TestBuildPlanInspectionDoesNotMutatePlan(t *testing.T) {
 	store := openTestStore(t)
 	definition := pkggraph.Definition{
@@ -84,9 +67,7 @@ func TestBuildPlanInspectionDoesNotMutatePlan(t *testing.T) {
 		Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone},
 	}
 	packageID := testID(t, definition)
-	graph := &pkggraph.Graph{
-		Nodes: map[pkggraph.ID]pkggraph.Definition{packageID: definition},
-	}
+	graph := testGraph(t, nil, definition)
 	plan, err := store.PlanBuild(context.Background(), graph, packageID)
 	if err != nil {
 		t.Fatal(err)
@@ -111,9 +92,7 @@ func TestBuildPlanIsBoundToItsStore(t *testing.T) {
 		Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone},
 	}
 	packageID := testID(t, definition)
-	graph := &pkggraph.Graph{
-		Nodes: map[pkggraph.ID]pkggraph.Definition{packageID: definition},
-	}
+	graph := testGraph(t, nil, definition)
 	plan, err := firstStore.PlanBuild(context.Background(), graph, packageID)
 	if err != nil {
 		t.Fatal(err)
@@ -183,7 +162,7 @@ func TestFetchBuildInputsRunsFetchesInParallel(t *testing.T) {
 
 			store := openTestStore(t)
 			plan.storePath = store.path
-			if err := store.FetchBuildInputsWithOptions(
+			if err := store.FetchBuildInputs(
 				context.Background(),
 				plan,
 				FetchInputsOptions{Jobs: test.jobs},
@@ -205,7 +184,7 @@ func TestFetchBuildInputsRejectsNegativeJobs(t *testing.T) {
 	store := openTestStore(t)
 	definition := pkggraph.Definition{Name: "negative-fetch-jobs", Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone}}
 	packageID := testID(t, definition)
-	err := store.FetchBuildInputsWithOptions(
+	err := store.FetchBuildInputs(
 		context.Background(),
 		&BuildPlan{
 			storePath: store.path,
@@ -219,7 +198,7 @@ func TestFetchBuildInputsRejectsNegativeJobs(t *testing.T) {
 		FetchInputsOptions{Jobs: -1},
 	)
 	if err == nil {
-		t.Fatal("FetchBuildInputsWithOptions accepted negative jobs")
+		t.Fatal("FetchBuildInputs accepted negative jobs")
 	}
 	if got, want := err.Error(), "pkgstore: fetch jobs must not be negative"; got != want {
 		t.Fatalf("error = %q, want %q", got, want)
@@ -248,21 +227,16 @@ func TestBuildPackagesValidatesOptionsBeforeFetching(t *testing.T) {
 		}},
 	}
 	packageID := testID(t, definition)
-	graph := &pkggraph.Graph{
-		Nodes: map[pkggraph.ID]pkggraph.Definition{
-			packageID: definition,
-		},
-		Roots: map[string]pkggraph.ID{"package": packageID},
-	}
+	graph := testGraph(t, map[string]pkggraph.ID{"package": packageID}, definition)
 	store := openTestStore(t)
-	_, err := store.BuildPackagesWithOptions(
+	_, err := store.BuildPackages(
 		context.Background(),
 		graph,
 		[]pkggraph.ID{packageID},
 		BuildOptions{Jobs: -1},
 	)
 	if err == nil || !strings.Contains(err.Error(), "build jobs must not be negative") {
-		t.Fatalf("BuildPackagesWithOptions() error = %v", err)
+		t.Fatalf("BuildPackages() error = %v", err)
 	}
 	if got := requests.Load(); got != 0 {
 		t.Fatalf("source requests = %d, want 0", got)
@@ -275,7 +249,7 @@ func openTestStore(t *testing.T) *Store {
 	if err := Init(root); err != nil {
 		t.Fatal(err)
 	}
-	store, err := Open(root)
+	store, err := Open(root, OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,6 +263,28 @@ func testID(t *testing.T, definition pkggraph.Definition) pkggraph.ID {
 		t.Fatal(err)
 	}
 	return packageID
+}
+
+// testGraph seals definitions, given dependency-first, and roots into a
+// package graph.
+func testGraph(
+	t *testing.T,
+	roots map[string]pkggraph.ID,
+	definitions ...pkggraph.Definition,
+) *pkggraph.Graph {
+	t.Helper()
+	var builder pkggraph.Builder
+	for _, definition := range definitions {
+		if _, err := builder.AddDefinition(definition); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, packageID := range roots {
+		if err := builder.SetRoot(name, packageID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return builder.Graph()
 }
 
 func plannedIDs(plan *BuildPlan) []pkggraph.ID {

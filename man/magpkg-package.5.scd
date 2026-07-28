@@ -192,14 +192,14 @@ as follows:
 	replace it with its package ID.
 - Overlay *buildEnv* on the default build environment.
 - Encode the resulting definition as compact canonical JSON.
-- Hash the literal byte prefix "magpkg-package-v2", one NUL byte, and the
+- Hash the literal byte prefix "magpkg-package-v1", one NUL byte, and the
 	canonical JSON bytes.
 - Encode the 32-byte digest as unpadded lowercase Base32.
 
 In notation:
 
 ```
-digest = SHA256(bytes("magpkg-package-v2") || byte(0) || canonical_json)
+digest = SHA256(bytes("magpkg-package-v1") || byte(0) || canonical_json)
 id = base32_lowercase_no_padding(digest)
 ```
 
@@ -262,7 +262,7 @@ has this exact canonical JSON (shown on one line because whitespace matters):
 Its package ID is:
 
 ```
-fy7f2e4kuvha4t5x66ibmn3itg3vqj3zfj7vbx6gk62q4xq5ghha
+a5wcuzmc5xqg4aj4rbdxodaxv7ycwedcwqt525xmk7kqflkix44q
 ```
 
 # HASH BOUNDARY

@@ -64,42 +64,18 @@ func Clean(
 		return fmt.Errorf("shellenv: open environments metadata: %w", err)
 	}
 
+	entries, err := readDirectory(absolutePath)
+	if err != nil {
+		return fmt.Errorf("shellenv: read environments directory: %w", err)
+	}
 	ids := make(map[string]struct{})
-	for _, directory := range []struct {
-		name   string
-		locked bool
-	}{
-		{name: rootsDirectory},
-		{name: locksDirectory, locked: true},
-		{name: workDirectory},
-	} {
-		entries, err := readDirectory(filepath.Join(absolutePath, directory.name))
-		if err != nil {
-			return fmt.Errorf(
-				"shellenv: read %s directory: %w",
-				directory.name,
-				err,
-			)
+	for _, entry := range entries {
+		name := entry.Name()
+		name = strings.TrimSuffix(name, lockSuffix)
+		name = strings.TrimSuffix(name, workSuffix)
+		if validEnvironmentID(name) {
+			ids[name] = struct{}{}
 		}
-		for _, entry := range entries {
-			name := entry.Name()
-			if directory.locked {
-				if !strings.HasSuffix(name, lockSuffix) {
-					continue
-				}
-				name = strings.TrimSuffix(name, lockSuffix)
-			}
-			if validEnvironmentID(name) {
-				ids[name] = struct{}{}
-			}
-		}
-	}
-	if len(ids) == 0 {
-		return nil
-	}
-	lockRoot := filepath.Join(absolutePath, locksDirectory)
-	if err := os.MkdirAll(lockRoot, 0o755); err != nil {
-		return fmt.Errorf("shellenv: create locks directory: %w", err)
 	}
 
 	ordered := make([]string, 0, len(ids))

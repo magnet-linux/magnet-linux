@@ -3,7 +3,6 @@ package pkgstore
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -18,7 +17,10 @@ func TestExecutorSkipsBusyReadyBranch(t *testing.T) {
 	if err := osMkdirBuildDirectories(store); err != nil {
 		t.Fatal(err)
 	}
-	firstLock, err := acquireLock(context.Background(), store.packageLockPath(firstID))
+	firstLock, err := acquireLock(
+		context.Background(),
+		store.packageLockPath(firstID, "first"),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,14 +267,5 @@ func independentBranchPlan(
 }
 
 func osMkdirBuildDirectories(store *Store) error {
-	for _, directory := range []string{
-		filepath.Join(store.path, packageDirectoryName),
-		filepath.Join(store.path, buildLockDirectory),
-		filepath.Join(store.path, buildWorkDirectory),
-	} {
-		if err := os.MkdirAll(directory, 0o755); err != nil {
-			return err
-		}
-	}
-	return nil
+	return os.MkdirAll(store.packageDirectory(), 0o755)
 }

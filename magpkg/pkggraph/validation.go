@@ -6,9 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"reflect"
 	"slices"
-	"sort"
 	"strings"
 )
 
@@ -54,25 +52,6 @@ func ValidateDefinition(definition Definition) error {
 		if err := ValidateID(dependency); err != nil {
 			return fmt.Errorf("pkggraph: dependency: %w", err)
 		}
-	}
-	return nil
-}
-
-// ValidateIdentity verifies that id is the canonical identity of definition.
-func ValidateIdentity(id ID, definition Definition) error {
-	if err := ValidateID(id); err != nil {
-		return err
-	}
-	expectedID, err := IDForDefinition(definition)
-	if err != nil {
-		return err
-	}
-	if id != expectedID {
-		return fmt.Errorf(
-			"pkggraph: package ID %s does not match its definition (expected %s)",
-			id,
-			expectedID,
-		)
 	}
 	return nil
 }
@@ -161,7 +140,8 @@ func CloneDefinition(definition Definition) Definition {
 }
 
 // NormalizeDefinition validates definition and returns its canonical graph
-// representation. Environment overrides equal to defaults are removed.
+// representation. Environment overrides equal to defaults are removed and
+// absent dependency, fetch, and URL lists become empty lists.
 func NormalizeDefinition(definition Definition) (Definition, error) {
 	if err := ValidateDefinition(definition); err != nil {
 		return Definition{}, err
@@ -176,6 +156,20 @@ func NormalizeDefinition(definition Definition) (Definition, error) {
 	if len(normalized.BuildEnv) == 0 {
 		normalized.BuildEnv = nil
 	}
+	if normalized.RunDeps == nil {
+		normalized.RunDeps = []ID{}
+	}
+	if normalized.BuildDeps == nil {
+		normalized.BuildDeps = []ID{}
+	}
+	if normalized.Fetch == nil {
+		normalized.Fetch = []Fetch{}
+	}
+	for index := range normalized.Fetch {
+		if normalized.Fetch[index].URLs == nil {
+			normalized.Fetch[index].URLs = []string{}
+		}
+	}
 	return normalized, nil
 }
 
@@ -188,103 +182,4 @@ func cloneStringMap(input map[string]string) map[string]string {
 		output[key] = value
 	}
 	return output
-}
-
-// Validate verifies every definition, root, dependency, and dependency cycle
-// in graph.
-func (graph *Graph) Validate() error {
-	if graph == nil {
-		return errors.New("pkggraph: graph is nil")
-	}
-	ids := make([]ID, 0, len(graph.Nodes))
-	for id := range graph.Nodes {
-		ids = append(ids, id)
-	}
-	sort.Slice(ids, func(first, second int) bool {
-		return ids[first] < ids[second]
-	})
-	for _, id := range ids {
-		definition := graph.Nodes[id]
-		normalized, err := NormalizeDefinition(definition)
-		if err != nil {
-			return fmt.Errorf("pkggraph: package %s: %w", id, err)
-		}
-		if !reflect.DeepEqual(normalized, definition) {
-			return fmt.Errorf(
-				"pkggraph: package %s definition is not normalized",
-				id,
-			)
-		}
-		if err := ValidateIdentity(id, definition); err != nil {
-			return fmt.Errorf("pkggraph: package %s: %w", id, err)
-		}
-		for _, dependency := range append(
-			slices.Clone(definition.RunDeps),
-			definition.BuildDeps...,
-		) {
-			if _, ok := graph.Nodes[dependency]; !ok {
-				return fmt.Errorf(
-					"pkggraph: package %s dependency %s is not in the graph",
-					id,
-					dependency,
-				)
-			}
-		}
-	}
-	rootNames := make([]string, 0, len(graph.Roots))
-	for name := range graph.Roots {
-		rootNames = append(rootNames, name)
-	}
-	slices.Sort(rootNames)
-	for _, name := range rootNames {
-		id := graph.Roots[name]
-		if err := ValidateID(id); err != nil {
-			return fmt.Errorf("pkggraph: root %q: %w", name, err)
-		}
-		if _, ok := graph.Nodes[id]; !ok {
-			return fmt.Errorf(
-				"pkggraph: root %q package %s is not in the graph",
-				name,
-				id,
-			)
-		}
-	}
-	return graph.validateAcyclic(ids)
-}
-
-func (graph *Graph) validateAcyclic(ids []ID) error {
-	type visitState uint8
-	const (
-		visitUnseen visitState = iota
-		visitActive
-		visitDone
-	)
-	state := make(map[ID]visitState, len(ids))
-	var visit func(ID) error
-	visit = func(id ID) error {
-		switch state[id] {
-		case visitActive:
-			return fmt.Errorf("pkggraph: dependency cycle through package %s", id)
-		case visitDone:
-			return nil
-		}
-		state[id] = visitActive
-		definition := graph.Nodes[id]
-		for _, dependency := range append(
-			slices.Clone(definition.RunDeps),
-			definition.BuildDeps...,
-		) {
-			if err := visit(dependency); err != nil {
-				return err
-			}
-		}
-		state[id] = visitDone
-		return nil
-	}
-	for _, id := range ids {
-		if err := visit(id); err != nil {
-			return err
-		}
-	}
-	return nil
 }

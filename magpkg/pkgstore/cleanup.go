@@ -22,6 +22,7 @@ const (
 	CleanKindFetchPartial CleanKind = "fetch-partial"
 	CleanKindPackage      CleanKind = "package"
 	CleanKindWorkspace    CleanKind = "workspace"
+	CleanKindTemp         CleanKind = "temp"
 )
 
 // CleanEvent describes one useful store entry removed by cleanup.
@@ -44,12 +45,7 @@ type CleanOptions struct {
 // Cleanup skips active fetches rather than waiting for their locks. A maxAge
 // of zero removes all idle fetches. For each idle checksum, its lock file is
 // unlinked last while the exclusive lock is still held.
-func (s *Store) CleanFetches(ctx context.Context, maxAge time.Duration) error {
-	return s.CleanFetchesWithOptions(ctx, maxAge, CleanOptions{})
-}
-
-// CleanFetchesWithOptions is CleanFetches with removal reporting.
-func (s *Store) CleanFetchesWithOptions(
+func (s *Store) CleanFetches(
 	ctx context.Context,
 	maxAge time.Duration,
 	options CleanOptions,
@@ -146,14 +142,9 @@ func (s *Store) CleanFetchesWithOptions(
 // been used within maxAge. A maxAge of zero removes all idle packages.
 //
 // Active builders and package readers are skipped rather than waited on. For
-// each idle package ID, its lock file is unlinked last while the exclusive
-// lock is still held.
-func (s *Store) CleanPackages(ctx context.Context, maxAge time.Duration) error {
-	return s.CleanPackagesWithOptions(ctx, maxAge, CleanOptions{})
-}
-
-// CleanPackagesWithOptions is CleanPackages with removal reporting.
-func (s *Store) CleanPackagesWithOptions(
+// each idle package, its lock file is unlinked last while the exclusive lock
+// is still held.
+func (s *Store) CleanPackages(
 	ctx context.Context,
 	maxAge time.Duration,
 	options CleanOptions,
@@ -169,98 +160,59 @@ func (s *Store) CleanPackagesWithOptions(
 	}
 
 	packageRoot := filepath.Join(s.path, packageDirectoryName)
-	lockRoot := filepath.Join(s.path, buildLockDirectory)
-	workRoot := filepath.Join(s.path, buildWorkDirectory)
-	artifacts := make(map[pkggraph.ID][]string)
-	packageIDs := make(map[pkggraph.ID]struct{})
-
 	entries, err := readDirectoryEntries(packageRoot)
 	if err != nil {
-		return fmt.Errorf("read package artifacts: %w", err)
+		return fmt.Errorf("read package entries: %w", err)
 	}
+	keys := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
-		if packageID, ok := packageArtifactEntryID(entry.Name()); ok {
-			packageIDs[packageID] = struct{}{}
-			artifacts[packageID] = append(
-				artifacts[packageID],
-				filepath.Join(packageRoot, entry.Name()),
-			)
+		if key, ok := packageEntryKey(entry.Name()); ok {
+			keys[key] = struct{}{}
 		}
 	}
 
-	entries, err = readDirectoryEntries(lockRoot)
-	if err != nil {
-		return fmt.Errorf("read package locks: %w", err)
+	orderedKeys := make([]string, 0, len(keys))
+	for key := range keys {
+		orderedKeys = append(orderedKeys, key)
 	}
-	for _, entry := range entries {
-		if packageID, ok := packageLockEntryID(entry.Name()); ok {
-			packageIDs[packageID] = struct{}{}
-		}
-	}
-
-	entries, err = readDirectoryEntries(workRoot)
-	if err != nil {
-		return fmt.Errorf("read package workspaces: %w", err)
-	}
-	for _, entry := range entries {
-		packageID := pkggraph.ID(entry.Name())
-		if pkggraph.ValidateID(packageID) == nil {
-			packageIDs[packageID] = struct{}{}
-		}
-	}
-
-	if len(packageIDs) == 0 {
-		return nil
-	}
-	if err := os.MkdirAll(lockRoot, 0o755); err != nil {
-		return fmt.Errorf("create package lock directory: %w", err)
-	}
-
-	orderedIDs := make([]pkggraph.ID, 0, len(packageIDs))
-	for packageID := range packageIDs {
-		orderedIDs = append(orderedIDs, packageID)
-	}
-	sort.Slice(orderedIDs, func(first int, second int) bool {
-		return orderedIDs[first] < orderedIDs[second]
-	})
+	sort.Strings(orderedKeys)
 
 	removeAll := maxAge == 0
 	cutoff := time.Now().Add(-maxAge)
-	for _, packageID := range orderedIDs {
+	for _, key := range orderedKeys {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 
-		lock, busy, err := tryLock(ctx, s.packageLockPath(packageID))
+		lock, busy, err := tryLock(
+			ctx,
+			filepath.Join(packageRoot, key+packageLockSuffix),
+		)
 		if err != nil {
-			return fmt.Errorf("lock package %s for cleanup: %w", packageID, err)
+			return fmt.Errorf("lock package %s for cleanup: %w", key, err)
 		}
 		if busy {
 			continue
 		}
 
-		var cleanupErrors []error
-		for _, artifactPath := range artifacts[packageID] {
-			removed, err := removeExpiredRegularFile(
-				artifactPath,
-				cutoff,
-				removeAll,
-			)
-			cleanupErrors = append(cleanupErrors, err)
-			if removed {
-				reportCleanEvent(options.OnRemove, CleanEvent{
-					Kind: CleanKindPackage,
-					Path: artifactPath,
-				})
-			}
+		artifactPath := filepath.Join(packageRoot, key+packageArtifactSuffix)
+		removedArtifact, artifactErr := removeExpiredRegularFile(
+			artifactPath,
+			cutoff,
+			removeAll,
+		)
+		if removedArtifact {
+			reportCleanEvent(options.OnRemove, CleanEvent{
+				Kind: CleanKindPackage,
+				Path: artifactPath,
+			})
 		}
-		workspacePath := filepath.Join(workRoot, string(packageID))
+		workspacePath := filepath.Join(packageRoot, key+packageWorkSuffix)
 		removedWorkspace, workspaceErr := removeExpiredDirectory(
 			workspacePath,
 			cutoff,
 			removeAll,
 		)
-		cleanupErrors = append(cleanupErrors, workspaceErr)
 		if removedWorkspace {
 			reportCleanEvent(options.OnRemove, CleanEvent{
 				Kind: CleanKindWorkspace,
@@ -271,11 +223,12 @@ func (s *Store) CleanPackagesWithOptions(
 		unlinkErr := lock.Unlink()
 		closeErr := lock.Close()
 		if err := errors.Join(
-			errors.Join(cleanupErrors...),
+			artifactErr,
+			workspaceErr,
 			unlinkErr,
 			closeErr,
 		); err != nil {
-			return fmt.Errorf("clean up package %s: %w", packageID, err)
+			return fmt.Errorf("clean up package %s: %w", key, err)
 		}
 	}
 	return nil
@@ -299,23 +252,41 @@ func fetchCacheEntryDigest(name string) (string, bool) {
 	return digest, true
 }
 
-func packageArtifactEntryID(name string) (pkggraph.ID, bool) {
-	if !strings.HasSuffix(name, packageArtifactSuffix) {
+// packageEntryKey recognizes a package artifact, lock, or workspace entry
+// name and returns its `[name-]id` key.
+func packageEntryKey(name string) (string, bool) {
+	for _, suffix := range []string{
+		packageArtifactSuffix,
+		packageLockSuffix,
+		packageWorkSuffix,
+	} {
+		if !strings.HasSuffix(name, suffix) {
+			continue
+		}
+		key := strings.TrimSuffix(name, suffix)
+		if _, ok := packageKeyID(key); !ok {
+			return "", false
+		}
+		return key, true
+	}
+	return "", false
+}
+
+// packageKeyID validates a `[name-]id` package key and returns its package
+// ID.
+func packageKeyID(key string) (pkggraph.ID, bool) {
+	if len(key) < pkggraph.IDLength {
 		return "", false
 	}
-	base := strings.TrimSuffix(name, packageArtifactSuffix)
-	if len(base) < pkggraph.IDLength {
-		return "", false
-	}
-	packageID := pkggraph.ID(base[len(base)-pkggraph.IDLength:])
+	packageID := pkggraph.ID(key[len(key)-pkggraph.IDLength:])
 	if pkggraph.ValidateID(packageID) != nil {
 		return "", false
 	}
 	namePrefix := strings.TrimSuffix(
-		base[:len(base)-pkggraph.IDLength],
+		key[:len(key)-pkggraph.IDLength],
 		"-",
 	)
-	if packageArtifactFilename(packageID, namePrefix) != name {
+	if packageKey(packageID, namePrefix) != key {
 		return "", false
 	}
 	if err := pkggraph.ValidateName(namePrefix); err != nil {
@@ -324,12 +295,11 @@ func packageArtifactEntryID(name string) (pkggraph.ID, bool) {
 	return packageID, true
 }
 
-func packageLockEntryID(name string) (pkggraph.ID, bool) {
-	if !strings.HasSuffix(name, buildLockSuffix) {
+func packageArtifactEntryID(name string) (pkggraph.ID, bool) {
+	if !strings.HasSuffix(name, packageArtifactSuffix) {
 		return "", false
 	}
-	packageID := pkggraph.ID(strings.TrimSuffix(name, buildLockSuffix))
-	return packageID, pkggraph.ValidateID(packageID) == nil
+	return packageKeyID(strings.TrimSuffix(name, packageArtifactSuffix))
 }
 
 func readDirectoryEntries(path string) ([]os.DirEntry, error) {

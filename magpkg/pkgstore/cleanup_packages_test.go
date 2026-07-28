@@ -21,9 +21,9 @@ func TestCleanPackagesRemovesExpiredAndRetainsTouched(t *testing.T) {
 	writeTestArtifact(t, store, expiredID, expiredDefinition.Name)
 	writeTestArtifact(t, store, retainedID, retainedDefinition.Name)
 
-	workRoot := filepath.Join(store.Path(), buildWorkDirectory)
-	for _, packageID := range []pkggraph.ID{expiredID, retainedID} {
-		workPath := filepath.Join(workRoot, string(packageID))
+	expiredWork := store.packageWorkPath(expiredID, expiredDefinition.Name)
+	retainedWork := store.packageWorkPath(retainedID, retainedDefinition.Name)
+	for _, workPath := range []string{expiredWork, retainedWork} {
 		if err := os.MkdirAll(workPath, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -33,26 +33,21 @@ func TestCleanPackagesRemovesExpiredAndRetainsTouched(t *testing.T) {
 	for _, path := range []string{
 		store.packageArtifactPath(expiredID, expiredDefinition.Name),
 		store.packageArtifactPath(retainedID, retainedDefinition.Name),
-		filepath.Join(workRoot, string(expiredID)),
-		filepath.Join(workRoot, string(retainedID)),
+		expiredWork,
+		retainedWork,
 	} {
 		if err := os.Chtimes(path, old, old); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	graph := &pkggraph.Graph{
-		Nodes: map[pkggraph.ID]pkggraph.Definition{
-			retainedID: retainedDefinition,
-		},
-		Roots: map[string]pkggraph.ID{"retained": retainedID},
-	}
+	graph := testGraph(t, map[string]pkggraph.ID{"retained": retainedID}, retainedDefinition)
 	if _, err := store.PlanBuild(context.Background(), graph, retainedID); err != nil {
 		t.Fatal(err)
 	}
 
 	var events []CleanEvent
-	if err := store.CleanPackagesWithOptions(
+	if err := store.CleanPackages(
 		context.Background(),
 		time.Hour,
 		CleanOptions{
@@ -71,10 +66,16 @@ func TestCleanPackagesRemovesExpiredAndRetainsTouched(t *testing.T) {
 		t,
 		store.packageArtifactPath(retainedID, retainedDefinition.Name),
 	)
-	assertMissingPackagePath(t, filepath.Join(workRoot, string(expiredID)))
-	assertMissingPackagePath(t, filepath.Join(workRoot, string(retainedID)))
-	assertMissingPackagePath(t, store.packageLockPath(expiredID))
-	assertMissingPackagePath(t, store.packageLockPath(retainedID))
+	assertMissingPackagePath(t, expiredWork)
+	assertMissingPackagePath(t, retainedWork)
+	assertMissingPackagePath(
+		t,
+		store.packageLockPath(expiredID, expiredDefinition.Name),
+	)
+	assertMissingPackagePath(
+		t,
+		store.packageLockPath(retainedID, retainedDefinition.Name),
+	)
 
 	wantEvents := map[CleanEvent]bool{
 		{
@@ -86,11 +87,11 @@ func TestCleanPackagesRemovesExpiredAndRetainsTouched(t *testing.T) {
 		}: true,
 		{
 			Kind: CleanKindWorkspace,
-			Path: filepath.Join(workRoot, string(expiredID)),
+			Path: expiredWork,
 		}: true,
 		{
 			Kind: CleanKindWorkspace,
-			Path: filepath.Join(workRoot, string(retainedID)),
+			Path: retainedWork,
 		}: true,
 	}
 	if len(events) != len(wantEvents) {
@@ -131,11 +132,14 @@ func TestCleanPackagesSkipsPackageHeldForUse(t *testing.T) {
 	}()
 	<-useStarted
 
-	if err := store.CleanPackages(context.Background(), time.Hour); err != nil {
+	if err := store.CleanPackages(context.Background(), time.Hour, CleanOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	assertRegularPackagePath(t, artifactPath)
-	assertRegularPackagePath(t, store.packageLockPath(packageID))
+	assertRegularPackagePath(
+		t,
+		store.packageLockPath(packageID, definition.Name),
+	)
 
 	close(releaseUse)
 	if err := <-useDone; err != nil {
@@ -144,11 +148,14 @@ func TestCleanPackagesSkipsPackageHeldForUse(t *testing.T) {
 	if err := os.Chtimes(artifactPath, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CleanPackages(context.Background(), time.Hour); err != nil {
+	if err := store.CleanPackages(context.Background(), time.Hour, CleanOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	assertMissingPackagePath(t, artifactPath)
-	assertMissingPackagePath(t, store.packageLockPath(packageID))
+	assertMissingPackagePath(
+		t,
+		store.packageLockPath(packageID, definition.Name),
+	)
 }
 
 func TestCleanPackagesAllIgnoresFutureModificationTime(t *testing.T) {
@@ -162,7 +169,7 @@ func TestCleanPackagesAllIgnoresFutureModificationTime(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := store.CleanPackages(context.Background(), 0); err != nil {
+	if err := store.CleanPackages(context.Background(), 0, CleanOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	assertMissingPackagePath(t, artifactPath)
@@ -172,7 +179,8 @@ func TestCleanPackagesIgnoresUnknownEntries(t *testing.T) {
 	store := openTestStore(t)
 	for _, relative := range []string{
 		filepath.Join(packageDirectoryName, "unknown.tar.zst"),
-		filepath.Join(buildLockDirectory, "unknown.lock"),
+		filepath.Join(packageDirectoryName, "unknown.lock"),
+		filepath.Join(packageDirectoryName, "unknown.workdir"),
 	} {
 		path := filepath.Join(store.Path(), relative)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -183,7 +191,7 @@ func TestCleanPackagesIgnoresUnknownEntries(t *testing.T) {
 		}
 	}
 
-	if err := store.CleanPackages(context.Background(), 0); err != nil {
+	if err := store.CleanPackages(context.Background(), 0, CleanOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	assertRegularPackagePath(
@@ -192,28 +200,32 @@ func TestCleanPackagesIgnoresUnknownEntries(t *testing.T) {
 	)
 	assertRegularPackagePath(
 		t,
-		filepath.Join(store.Path(), buildLockDirectory, "unknown.lock"),
+		filepath.Join(store.Path(), packageDirectoryName, "unknown.lock"),
+	)
+	assertRegularPackagePath(
+		t,
+		filepath.Join(store.Path(), packageDirectoryName, "unknown.workdir"),
 	)
 }
 
 func TestCleanPackagesValidationAndMissingDirectories(t *testing.T) {
 	store := openTestStore(t)
-	if err := store.CleanPackages(context.Background(), time.Hour); err != nil {
+	if err := store.CleanPackages(context.Background(), time.Hour, CleanOptions{}); err != nil {
 		t.Fatalf("CleanPackages() on empty store: %v", err)
 	}
-	if err := store.CleanPackages(context.Background(), -time.Second); err == nil ||
+	if err := store.CleanPackages(context.Background(), -time.Second, CleanOptions{}); err == nil ||
 		!strings.Contains(err.Error(), "must not be negative") {
 		t.Fatalf("negative maxAge error = %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := store.CleanPackages(ctx, time.Hour); !errors.Is(err, context.Canceled) {
+	if err := store.CleanPackages(ctx, time.Hour, CleanOptions{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled CleanPackages() error = %v, want context.Canceled", err)
 	}
 
 	var nilStore *Store
-	if err := nilStore.CleanPackages(context.Background(), time.Hour); err == nil ||
+	if err := nilStore.CleanPackages(context.Background(), time.Hour, CleanOptions{}); err == nil ||
 		!strings.Contains(err.Error(), "store is not initialized") {
 		t.Fatalf("nil store error = %v", err)
 	}

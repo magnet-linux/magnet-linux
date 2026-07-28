@@ -59,23 +59,40 @@ func TestValidateBuildSpec(t *testing.T) {
 	}
 }
 
-func TestGraphValidateRejectsMissingDependency(t *testing.T) {
-	missing := ID(strings.Repeat("a", IDLength))
-	definition := Definition{
-		Name:    "root",
-		Build:   BuildSpec{Kind: BuildNone},
-		RunDeps: []ID{missing},
-	}
-	id, err := IDForDefinition(definition)
+func TestNormalizeDefinitionCanonicalizesEmptyLists(t *testing.T) {
+	normalized, err := NormalizeDefinition(Definition{
+		Build: BuildSpec{Kind: BuildNone},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	graph := &Graph{
-		Nodes: map[ID]Definition{id: definition},
-		Roots: map[string]ID{"root": id},
+	if normalized.RunDeps == nil ||
+		normalized.BuildDeps == nil ||
+		normalized.Fetch == nil {
+		t.Fatalf(
+			"normalized lists = %#v, want empty non-nil lists",
+			normalized,
+		)
 	}
-	err = graph.Validate()
-	if err == nil || !strings.Contains(err.Error(), "is not in the graph") {
-		t.Fatalf("Validate() error = %v, want missing dependency error", err)
+
+	nilID, err := IDForDefinition(Definition{Build: BuildSpec{Kind: BuildNone}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyID, err := IDForDefinition(Definition{
+		Build:     BuildSpec{Kind: BuildNone},
+		RunDeps:   []ID{},
+		BuildDeps: []ID{},
+		Fetch:     []Fetch{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nilID != emptyID {
+		t.Fatalf(
+			"nil-list ID %s differs from empty-list ID %s",
+			nilID,
+			emptyID,
+		)
 	}
 }

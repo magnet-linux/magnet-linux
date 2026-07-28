@@ -86,20 +86,14 @@ func (s *Store) fetchPackageFromBinaryCache(
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	for _, directory := range []string{
-		filepath.Join(s.path, packageDirectoryName),
-		filepath.Join(s.path, buildLockDirectory),
-		filepath.Join(s.path, buildWorkDirectory),
-	} {
-		if err := os.MkdirAll(directory, 0o755); err != nil {
-			return false, fmt.Errorf(
-				"create binary-cache store directory: %w",
-				err,
-			)
-		}
+	if err := os.MkdirAll(s.packageDirectory(), 0o755); err != nil {
+		return false, fmt.Errorf(
+			"create binary-cache store directory: %w",
+			err,
+		)
 	}
 
-	lock, err := acquireLock(ctx, s.packageLockPath(packageID))
+	lock, err := acquireLock(ctx, s.packageLockPath(packageID, packageName))
 	if err != nil {
 		return false, fmt.Errorf("lock package %s for binary cache: %w", packageID, err)
 	}
@@ -160,7 +154,7 @@ func (s *Store) fetchPackageFromBinaryCache(
 		)
 	}
 
-	workRoot := s.packageWorkPath(packageID)
+	workRoot := s.packageWorkPath(packageID, packageName)
 	if err := os.MkdirAll(workRoot, 0o755); err != nil {
 		return false, fmt.Errorf("create binary-cache workspace: %w", err)
 	}

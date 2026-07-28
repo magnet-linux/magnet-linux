@@ -73,56 +73,10 @@ type normalizedExecuteOptions struct {
 	outputMutex      *sync.Mutex
 }
 
-// Build realizes packageID and its dependencies using binary-cache
-// substitution when configured and one local package-build job when needed.
-func (s *Store) Build(
-	ctx context.Context,
-	graph *pkggraph.Graph,
-	packageID pkggraph.ID,
-) (*Artifact, error) {
-	packages, err := s.BuildPackages(ctx, graph, packageID)
-	if err != nil {
-		return nil, err
-	}
-	return packages[0], nil
-}
-
-// BuildWithOptions realizes packageID and its dependencies with options.
-func (s *Store) BuildWithOptions(
-	ctx context.Context,
-	graph *pkggraph.Graph,
-	packageID pkggraph.ID,
-	options BuildOptions,
-) (*Artifact, error) {
-	packages, err := s.BuildPackagesWithOptions(
-		ctx,
-		graph,
-		[]pkggraph.ID{packageID},
-		options,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return packages[0], nil
-}
-
-// BuildPackages realizes packageIDs and their dependencies. Returned packages
-// are ordered like the deduplicated input roots.
+// BuildPackages realizes packageIDs and their dependencies through local
+// artifacts, binary-cache substitution, source fetching, and local builds.
+// Returned packages are ordered like the deduplicated input roots.
 func (s *Store) BuildPackages(
-	ctx context.Context,
-	graph *pkggraph.Graph,
-	packageIDs ...pkggraph.ID,
-) ([]*Artifact, error) {
-	return s.BuildPackagesWithOptions(
-		ctx,
-		graph,
-		packageIDs,
-		BuildOptions{},
-	)
-}
-
-// BuildPackagesWithOptions is BuildPackages with realization controls.
-func (s *Store) BuildPackagesWithOptions(
 	ctx context.Context,
 	graph *pkggraph.Graph,
 	packageIDs []pkggraph.ID,
@@ -154,7 +108,7 @@ func (s *Store) BuildPackagesWithOptions(
 			}
 		}
 	}
-	if err := s.FetchBuildInputsWithOptions(ctx, plan, FetchInputsOptions{
+	if err := s.FetchBuildInputs(ctx, plan, FetchInputsOptions{
 		Jobs:     options.FetchJobs,
 		Progress: options.FetchProgress,
 	}); err != nil {
@@ -225,14 +179,8 @@ func (s *Store) executeBuildPlan(
 	if err := validateBuildPlanForStore(s, plan); err != nil {
 		return nil, err
 	}
-	for _, directory := range []string{
-		filepath.Join(s.path, packageDirectoryName),
-		filepath.Join(s.path, buildLockDirectory),
-		filepath.Join(s.path, buildWorkDirectory),
-	} {
-		if err := os.MkdirAll(directory, 0o755); err != nil {
-			return nil, fmt.Errorf("create build store directory: %w", err)
-		}
+	if err := os.MkdirAll(s.packageDirectory(), 0o755); err != nil {
+		return nil, fmt.Errorf("create build store directory: %w", err)
 	}
 
 	executionContext, cancel := context.WithCancel(ctx)
@@ -319,7 +267,10 @@ func (s *Store) executeBuildPlan(
 				continue
 			}
 
-			lock, busy, err := tryLock(executionContext, s.packageLockPath(planned.ID))
+			lock, busy, err := tryLock(
+				executionContext,
+				s.packageLockPath(planned.ID, planned.Definition.Name),
+			)
 			if err != nil {
 				firstErr = fmt.Errorf("lock package %s: %w", planned.ID, err)
 				cancel()
@@ -515,7 +466,7 @@ func (s *Store) buildPlannedPackage(
 	planned PlannedPackage,
 	options normalizedExecuteOptions,
 ) error {
-	workRoot := s.packageWorkPath(planned.ID)
+	workRoot := s.packageWorkPath(planned.ID, planned.Definition.Name)
 	if err := os.RemoveAll(workRoot); err != nil {
 		return fmt.Errorf("remove previous build workspace: %w", err)
 	}
@@ -536,7 +487,7 @@ func (s *Store) buildPlannedPackage(
 
 	sources := make([]string, len(planned.Definition.Fetch))
 	for index, source := range planned.Definition.Fetch {
-		fetchedPath, err := s.Fetch(ctx, source)
+		fetchedPath, err := s.Fetch(ctx, source, FetchOptions{})
 		if err != nil {
 			return fmt.Errorf("fetch %q: %w", source.Filename, err)
 		}
@@ -674,27 +625,23 @@ func runtimeInstallOrder(plan *BuildPlan, planned PlannedPackage) ([]pkggraph.ID
 	for _, item := range plan.packages {
 		byID[item.ID] = item
 	}
-	state := make(map[pkggraph.ID]visitState)
+	seen := make(map[pkggraph.ID]struct{})
 	var order []pkggraph.ID
 	var visit func(pkggraph.ID) error
 	visit = func(packageID pkggraph.ID) error {
-		switch state[packageID] {
-		case visitActive:
-			return fmt.Errorf("runtime dependency cycle through package %s", packageID)
-		case visitDone:
+		if _, ok := seen[packageID]; ok {
 			return nil
 		}
 		dependency, ok := byID[packageID]
 		if !ok {
 			return fmt.Errorf("runtime dependency %s is not in the build plan", packageID)
 		}
-		state[packageID] = visitActive
+		seen[packageID] = struct{}{}
 		for _, runtimeDependency := range dependency.Definition.RunDeps {
 			if err := visit(runtimeDependency); err != nil {
 				return err
 			}
 		}
-		state[packageID] = visitDone
 		order = append(order, packageID)
 		return nil
 	}

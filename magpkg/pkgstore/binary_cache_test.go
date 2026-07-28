@@ -83,14 +83,8 @@ func TestBinaryCacheHitSkipsSourcesAndBuildDependencies(t *testing.T) {
 		BinaryCacheURL: server.URL,
 		HTTPClient:     server.Client(),
 	})
-	graph := &pkggraph.Graph{
-		Nodes: map[pkggraph.ID]pkggraph.Definition{
-			buildDependencyID: buildDependency,
-			rootID:            root,
-		},
-		Roots: map[string]pkggraph.ID{"root": rootID},
-	}
-	artifacts, err := localStore.BuildPackagesWithOptions(
+	graph := testGraph(t, map[string]pkggraph.ID{"root": rootID}, buildDependency, root)
+	artifacts, err := localStore.BuildPackages(
 		context.Background(),
 		graph,
 		[]pkggraph.ID{rootID},
@@ -168,15 +162,11 @@ func TestBinaryCacheMissFallsBackToLocalBuild(t *testing.T) {
 		Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone},
 	}
 	packageID := testID(t, definition)
-	graph := &pkggraph.Graph{
-		Nodes: map[pkggraph.ID]pkggraph.Definition{packageID: definition},
-	}
+	graph := testGraph(t, nil, definition)
 
 	artifacts, err := store.BuildPackages(
 		context.Background(),
-		graph,
-		packageID,
-	)
+		graph, []pkggraph.ID{packageID}, BuildOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,18 +213,16 @@ func TestNoBuildCacheMissDoesNotFetchSources(t *testing.T) {
 		}},
 	}
 	packageID := testID(t, definition)
-	graph := &pkggraph.Graph{
-		Nodes: map[pkggraph.ID]pkggraph.Definition{packageID: definition},
-	}
+	graph := testGraph(t, nil, definition)
 
-	_, err := store.BuildPackagesWithOptions(
+	_, err := store.BuildPackages(
 		context.Background(),
 		graph,
 		[]pkggraph.ID{packageID},
 		BuildOptions{NoBuild: true},
 	)
 	if err == nil || !strings.Contains(err.Error(), "local builds are disabled") {
-		t.Fatalf("BuildPackagesWithOptions() error = %v, want no-build miss", err)
+		t.Fatalf("BuildPackages() error = %v, want no-build miss", err)
 	}
 	if sourceRequests.Load() != 0 {
 		t.Fatalf("source requests = %d, want 0", sourceRequests.Load())
@@ -264,15 +252,11 @@ func TestInvalidBinaryCacheArtifactIsNotPublished(t *testing.T) {
 		Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone},
 	}
 	packageID := testID(t, definition)
-	graph := &pkggraph.Graph{
-		Nodes: map[pkggraph.ID]pkggraph.Definition{packageID: definition},
-	}
+	graph := testGraph(t, nil, definition)
 
 	_, err := store.BuildPackages(
 		context.Background(),
-		graph,
-		packageID,
-	)
+		graph, []pkggraph.ID{packageID}, BuildOptions{})
 	if err == nil || !strings.Contains(err.Error(), "validate binary-cache artifact") {
 		t.Fatalf("BuildPackages() error = %v, want validation error", err)
 	}
@@ -321,16 +305,14 @@ func TestConcurrentBinaryCacheSubstitutionDownloadsOnce(t *testing.T) {
 		BinaryCacheURL: server.URL,
 		HTTPClient:     server.Client(),
 	})
-	graph := &pkggraph.Graph{
-		Nodes: map[pkggraph.ID]pkggraph.Definition{packageID: definition},
-	}
+	graph := testGraph(t, nil, definition)
 
 	start := make(chan struct{})
 	errorsFound := make(chan error, 2)
 	for range 2 {
 		go func() {
 			<-start
-			_, err := store.BuildPackagesWithOptions(
+			_, err := store.BuildPackages(
 				context.Background(),
 				graph,
 				[]pkggraph.ID{packageID},
@@ -461,6 +443,78 @@ func TestBinaryCacheHandlerProtocolAndTouching(t *testing.T) {
 	}
 }
 
+func TestBinaryCacheHandlerServesOnlyPackageArtifacts(t *testing.T) {
+	store := openTestStore(t)
+	definition := pkggraph.Definition{
+		Name:  "served",
+		Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone},
+	}
+	packageID := testID(t, definition)
+	writeBinaryCacheTestArtifact(
+		t,
+		store,
+		packageID,
+		definition.Name,
+		"served",
+		"served\n",
+	)
+	// Populate the sibling entries that share the served directory.
+	if err := os.WriteFile(
+		store.packageLockPath(packageID, definition.Name),
+		nil,
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	workPath := store.packageWorkPath(packageID, definition.Name)
+	if err := os.MkdirAll(workPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(workPath, "artifact"+packageArtifactSuffix),
+		[]byte("partial build output"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	handler, err := NewBinaryCacheHandler(store, BinaryCacheHandlerOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	get := func(target string) int {
+		request := httptest.NewRequest(http.MethodGet, target, nil)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		return recorder.Code
+	}
+
+	artifactTarget := binaryCachePackagesPath +
+		packageArtifactFilename(packageID, definition.Name)
+	if code := get(artifactTarget); code != http.StatusOK {
+		t.Fatalf("artifact GET = %d, want 200", code)
+	}
+
+	key := packageKey(packageID, definition.Name)
+	for _, target := range []string{
+		binaryCachePackagesPath + key + packageLockSuffix,
+		binaryCachePackagesPath + key + packageWorkSuffix,
+		binaryCachePackagesPath + key + packageWorkSuffix +
+			"/artifact" + packageArtifactSuffix,
+		binaryCachePackagesPath + "../" + storeMetadataFilename,
+		binaryCachePackagesPath + "..%2F" + storeMetadataFilename,
+		binaryCachePackagesPath + "unknown" + packageArtifactSuffix,
+		binaryCachePackagesPath +
+			strings.ToUpper(string(packageID)) + packageArtifactSuffix,
+		"/v1/packages",
+		"/" + key + packageArtifactSuffix,
+	} {
+		if code := get(target); code != http.StatusNotFound {
+			t.Fatalf("GET %q = %d, want 404", target, code)
+		}
+	}
+}
+
 func TestBinaryCacheHandlerRejectsSymlinkArtifact(t *testing.T) {
 	store := openTestStore(t)
 	definition := pkggraph.Definition{
@@ -565,7 +619,7 @@ func openTestStoreWithOptions(t *testing.T, options OpenOptions) *Store {
 	if err := Init(path); err != nil {
 		t.Fatal(err)
 	}
-	store, err := OpenWithOptions(path, options)
+	store, err := Open(path, options)
 	if err != nil {
 		t.Fatal(err)
 	}

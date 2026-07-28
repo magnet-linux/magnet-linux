@@ -51,15 +51,18 @@ func TestBuildPublishesUnnamedPackageArtifact(t *testing.T) {
 	store := openTestStore(t)
 	definition := pkggraph.Definition{Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone}}
 	packageID := testID(t, definition)
-	graph := &pkggraph.Graph{
-		Nodes: map[pkggraph.ID]pkggraph.Definition{packageID: definition},
-		Roots: map[string]pkggraph.ID{"unnamed": packageID},
-	}
+	graph := testGraph(t, map[string]pkggraph.ID{"unnamed": packageID}, definition)
 
-	pkg, err := store.Build(context.Background(), graph, packageID)
+	packages, err := store.BuildPackages(
+		context.Background(),
+		graph,
+		[]pkggraph.ID{packageID},
+		BuildOptions{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	pkg := packages[0]
 	want := store.packageArtifactPath(packageID, "")
 	if pkg.StorePath != want {
 		t.Fatalf("StorePath = %q, want %q", pkg.StorePath, want)

@@ -63,28 +63,31 @@ func TestEvaluateFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(graph.Nodes) != 2 {
-		t.Fatalf("len(Nodes) = %d, want 2", len(graph.Nodes))
+	if nodes := graph.NodeIDs(); len(nodes) != 2 {
+		t.Fatalf("len(NodeIDs()) = %d, want 2", len(nodes))
 	}
-	if len(graph.Roots) != 4 {
-		t.Fatalf("len(Roots) = %d, want 4", len(graph.Roots))
+	if roots := graph.RootNames(); len(roots) != 4 {
+		t.Fatalf("len(RootNames()) = %d, want 4", len(roots))
 	}
 
-	dependencyID := graph.Roots["dependency"]
-	if dependencyID == "" {
+	dependencyID, ok := graph.Root("dependency")
+	if !ok || dependencyID == "" {
 		t.Fatal("dependency root has an empty package ID")
 	}
-	if graph.Roots["dependencyAlias"] != dependencyID {
+	if aliasID, _ := graph.Root("dependencyAlias"); aliasID != dependencyID {
 		t.Fatal("references to the same object have different package IDs")
 	}
-	if graph.Roots["equivalentDependency"] != dependencyID {
+	if equivalentID, _ := graph.Root("equivalentDependency"); equivalentID != dependencyID {
 		t.Fatal("equivalent package definitions were not content-deduplicated")
 	}
 	assertID(t, dependencyID)
 
-	rootID := graph.Roots["root"]
+	rootID, _ := graph.Root("root")
 	assertID(t, rootID)
-	root := graph.Nodes[rootID]
+	root, ok := graph.Definition(rootID)
+	if !ok {
+		t.Fatal("root definition is missing from the graph")
+	}
 	if root.Name != "root" {
 		t.Fatalf("root.Name = %q, want %q", root.Name, "root")
 	}
@@ -135,7 +138,8 @@ func TestEvaluateFileAllowsOmittedName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	definition := graph.Nodes[graph.Roots["package"]]
+	packageID, _ := graph.Root("package")
+	definition, _ := graph.Definition(packageID)
 	if definition.Name != "" {
 		t.Fatalf("package name = %q, want empty", definition.Name)
 	}
@@ -181,11 +185,11 @@ func TestEvaluateFileNormalizesBuildEnvironmentOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	defaultID := graph.Roots["default"]
-	if graph.Roots["explicitDefault"] != defaultID {
+	defaultID, _ := graph.Root("default")
+	if explicitID, _ := graph.Root("explicitDefault"); explicitID != defaultID {
 		t.Fatal("omitted and explicitly default build environments have different IDs")
 	}
-	customID := graph.Roots["custom"]
+	customID, _ := graph.Root("custom")
 	if customID == defaultID {
 		t.Fatal("build environment override did not change the package ID")
 	}
@@ -194,7 +198,8 @@ func TestEvaluateFileNormalizesBuildEnvironmentOverrides(t *testing.T) {
 		"PATH":   "/bin",
 		"CUSTOM": "custom value",
 	}
-	if got := graph.Nodes[customID].BuildEnv; !reflect.DeepEqual(got, wantCustom) {
+	custom, _ := graph.Definition(customID)
+	if got := custom.BuildEnv; !reflect.DeepEqual(got, wantCustom) {
 		t.Fatalf("custom BuildEnv = %#v, want %#v", got, wantCustom)
 	}
 }
@@ -244,14 +249,15 @@ func TestEvaluateFileImports(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(graph.Nodes) != 2 {
-		t.Fatalf("len(Nodes) = %d, want 2", len(graph.Nodes))
+	if nodes := graph.NodeIDs(); len(nodes) != 2 {
+		t.Fatalf("len(NodeIDs()) = %d, want 2", len(nodes))
 	}
-	root := graph.Nodes[graph.Roots["root"]]
+	rootID, _ := graph.Root("root")
+	root, _ := graph.Definition(rootID)
 	if len(root.BuildDeps) != 1 {
 		t.Fatalf("root.BuildDeps = %#v, want one dependency", root.BuildDeps)
 	}
-	bootstrap := graph.Nodes[root.BuildDeps[0]]
+	bootstrap, _ := graph.Definition(root.BuildDeps[0])
 	if bootstrap.Name != "bootstrap" {
 		t.Fatalf("bootstrap.Name = %q, want %q", bootstrap.Name, "bootstrap")
 	}

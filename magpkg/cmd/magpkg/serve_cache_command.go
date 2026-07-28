@@ -58,7 +58,7 @@ func runServeCache(
 	if err != nil {
 		return err
 	}
-	store, err := pkgstore.Open(storePath)
+	store, err := pkgstore.Open(storePath, pkgstore.OpenOptions{})
 	if err != nil {
 		return fmt.Errorf(
 			"open store %q (run `magpkg init` first): %w",

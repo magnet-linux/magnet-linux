@@ -333,7 +333,7 @@ func buildLauncherPackage(
 	if err := pkgstore.Init(storePath); err != nil {
 		t.Fatal(err)
 	}
-	store, err := pkgstore.Open(storePath)
+	store, err := pkgstore.Open(storePath, pkgstore.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,19 +358,18 @@ func buildLauncherPackage(
 			URLs:     []string{sourceURL},
 		}},
 	}
-	rootID, err := pkggraph.IDForDefinition(definition)
+	var builder pkggraph.Builder
+	rootID, err := builder.AddDefinition(definition)
 	if err != nil {
 		t.Fatal(err)
 	}
-	graph := &pkggraph.Graph{
-		Nodes: map[pkggraph.ID]pkggraph.Definition{rootID: definition},
-		Roots: map[string]pkggraph.ID{"shell": rootID},
+	if err := builder.SetRoot("shell", rootID); err != nil {
+		t.Fatal(err)
 	}
+	graph := builder.Graph()
 	if _, err := store.BuildPackages(
 		context.Background(),
-		graph,
-		rootID,
-	); err != nil {
+		graph, []pkggraph.ID{rootID}, pkgstore.BuildOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	return store, graph, rootID
