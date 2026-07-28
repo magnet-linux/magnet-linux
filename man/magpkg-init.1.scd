@@ -10,9 +10,10 @@ magpkg-init - initialize a magpkg package store
 
 # DESCRIPTION
 
-*magpkg init* creates the package-store root and any missing parent
-directories. Fetch, package, lock, and workspace subdirectories are created
-later as they are needed.
+*magpkg init* creates the package-store root, any missing parent directories,
+and versioned store metadata. Fetch, package, lock, and workspace
+subdirectories are created later as they are needed. Existing compatible
+stores are accepted; malformed or unsupported metadata is not overwritten.
 
 On success, the absolute store path is written to standard output. Running the
 command again for an existing directory is harmless.

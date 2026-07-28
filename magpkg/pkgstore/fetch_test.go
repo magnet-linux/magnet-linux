@@ -1,10 +1,12 @@
 package pkgstore_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,9 +17,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
 	"github.com/andrewchambers/magnet-linux/magpkg/pkgstore"
 	"golang.org/x/sys/unix"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (roundTrip roundTripFunc) RoundTrip(
+	request *http.Request,
+) (*http.Response, error) {
+	return roundTrip(request)
+}
 
 func TestFetchFileURL(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "store")
@@ -37,7 +48,7 @@ func TestFetchFileURL(t *testing.T) {
 	digest := sha256Hex(content)
 	sourceURL := (&url.URL{Scheme: "file", Path: sourcePath}).String()
 
-	cachedPath, err := store.Fetch(context.Background(), pkgstore.Fetch{
+	cachedPath, err := store.Fetch(context.Background(), pkggraph.Fetch{
 		Filename: "source.tar.gz",
 		SHA256:   strings.ToUpper(digest),
 		URLs:     []string{sourceURL},
@@ -61,7 +72,7 @@ func TestFetchFileURL(t *testing.T) {
 	if err := os.Remove(sourcePath); err != nil {
 		t.Fatal(err)
 	}
-	secondPath, err := store.Fetch(context.Background(), pkgstore.Fetch{
+	secondPath, err := store.Fetch(context.Background(), pkggraph.Fetch{
 		Filename: "source.tar.gz",
 		SHA256:   digest,
 	})
@@ -80,7 +91,7 @@ func TestFetchProgressReportsTransferAndCacheHit(t *testing.T) {
 	if err := os.WriteFile(sourcePath, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	source := pkgstore.Fetch{
+	source := pkggraph.Fetch{
 		Filename: "source",
 		SHA256:   sha256Hex(content),
 		URLs: []string{(&url.URL{
@@ -135,6 +146,17 @@ func TestFetchProgressReportsTransferAndCacheHit(t *testing.T) {
 		int64(len(content)),
 		int64(len(content)),
 	)
+	for _, events := range [][]pkgstore.FetchProgress{first, second} {
+		for _, event := range events {
+			if event.SHA256 != source.SHA256 {
+				t.Fatalf(
+					"progress SHA256 = %q, want %q",
+					event.SHA256,
+					source.SHA256,
+				)
+			}
+		}
+	}
 	for _, event := range second {
 		if event.Phase != pkgstore.FetchProgressCached {
 			t.Fatalf("cached fetch reported unexpected phase %q", event.Phase)
@@ -164,7 +186,7 @@ func TestFetchHTTPFallsBackAfterChecksumMismatch(t *testing.T) {
 	defer server.Close()
 
 	store := newTestStore(t)
-	fetch := pkgstore.Fetch{
+	fetch := pkggraph.Fetch{
 		Filename: "source",
 		SHA256:   sha256Hex(content),
 		URLs:     []string{server.URL + "/bad", server.URL + "/good"},
@@ -216,6 +238,61 @@ func TestFetchHTTPFallsBackAfterChecksumMismatch(t *testing.T) {
 	}
 }
 
+func TestFetchHTTPUsesConfiguredClient(t *testing.T) {
+	content := []byte("response from configured client")
+	var requests atomic.Int32
+	client := &http.Client{
+		Transport: roundTripFunc(func(
+			request *http.Request,
+		) (*http.Response, error) {
+			requests.Add(1)
+			if got, want := request.URL.String(), "https://source.invalid/archive"; got != want {
+				t.Fatalf("request URL = %q, want %q", got, want)
+			}
+			if got := request.Header.Get("Accept-Encoding"); got != "identity" {
+				t.Fatalf("Accept-Encoding = %q, want identity", got)
+			}
+			return &http.Response{
+				Status:        "200 OK",
+				StatusCode:    http.StatusOK,
+				Header:        make(http.Header),
+				Body:          io.NopCloser(bytes.NewReader(content)),
+				ContentLength: int64(len(content)),
+				Request:       request,
+			}, nil
+		}),
+	}
+	path := filepath.Join(t.TempDir(), "store")
+	if err := pkgstore.Init(path); err != nil {
+		t.Fatal(err)
+	}
+	store, err := pkgstore.OpenWithOptions(path, pkgstore.OpenOptions{
+		HTTPClient: client,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cachedPath, err := store.Fetch(context.Background(), pkggraph.Fetch{
+		Filename: "archive",
+		SHA256:   sha256Hex(content),
+		URLs:     []string{"https://source.invalid/archive"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("HTTP requests = %d, want 1", got)
+	}
+	cached, err := os.ReadFile(cachedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(cached, content) {
+		t.Fatalf("cached content = %q, want %q", cached, content)
+	}
+}
+
 func assertFetchProgressPhase(
 	t *testing.T,
 	events []pkgstore.FetchProgress,
@@ -261,7 +338,7 @@ func TestFetchReplacesInvalidCacheEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	gotPath, err := store.Fetch(context.Background(), pkgstore.Fetch{
+	gotPath, err := store.Fetch(context.Background(), pkggraph.Fetch{
 		Filename: "source",
 		SHA256:   digest,
 		URLs:     []string{server.URL},
@@ -287,7 +364,7 @@ func TestFetchAllURLsFailWithoutPublishingPartial(t *testing.T) {
 	digest := sha256Hex(content)
 	cachedPath := filepath.Join(store.Path(), "fetch", digest)
 
-	_, err := store.Fetch(context.Background(), pkgstore.Fetch{
+	_, err := store.Fetch(context.Background(), pkggraph.Fetch{
 		Filename: "source",
 		SHA256:   digest,
 		URLs: []string{
@@ -341,7 +418,7 @@ func TestFetchWaitForLockHonorsContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	_, err = store.Fetch(ctx, pkgstore.Fetch{
+	_, err = store.Fetch(ctx, pkggraph.Fetch{
 		Filename: "source",
 		SHA256:   digest,
 		URLs:     []string{sourceURL},
@@ -358,19 +435,19 @@ func TestFetchValidatesDefinition(t *testing.T) {
 	store := newTestStore(t)
 	tests := []struct {
 		name      string
-		fetch     pkgstore.Fetch
+		fetch     pkggraph.Fetch
 		wantError string
 	}{
 		{
 			name: "filename",
-			fetch: pkgstore.Fetch{
+			fetch: pkggraph.Fetch{
 				SHA256: strings.Repeat("0", 64),
 			},
 			wantError: "fetch filename is empty",
 		},
 		{
 			name: "checksum",
-			fetch: pkgstore.Fetch{
+			fetch: pkggraph.Fetch{
 				Filename: "source",
 				SHA256:   "invalid",
 			},
@@ -378,7 +455,7 @@ func TestFetchValidatesDefinition(t *testing.T) {
 		},
 		{
 			name: "URLs",
-			fetch: pkgstore.Fetch{
+			fetch: pkggraph.Fetch{
 				Filename: "source",
 				SHA256:   strings.Repeat("0", 64),
 			},

@@ -17,8 +17,8 @@ sources, and builds package closures in an isolated environment. Package
 artifacts are stored by package ID and may be reused safely by concurrent
 magpkg processes.
 
-The command can also compose runtime closures into mutable destination trees
-and remove old store state.
+The command can also export runtime closures as archives, compose them into
+mutable destination trees, and remove old store state.
 
 # COMMANDS
 
@@ -27,6 +27,9 @@ and remove old store state.
 
 *build*
 	Build selected roots and their dependencies from a Jsonnet package graph.
+
+*export*
+	Export selected runtime closures as one tar archive.
 
 *sync*
 	Make the magpkg-managed portion of a destination match selected runtime
@@ -37,6 +40,9 @@ and remove old store state.
 
 *clean*
 	Remove old cached fetches, package artifacts, and workspaces.
+
+*serve-cache*
+	Serve completed package artifacts from a store over HTTP.
 
 Run *magpkg* <command> *--help* for a command's short usage text.
 
@@ -55,6 +61,10 @@ The store must first be created with *magpkg init*.
 *MAGPKG_STORE*
 	Default package store path when *--store* is not given.
 
+*MAGPKG_BINARY_CACHE*
+	Default trusted binary-cache URL for *build*, *export*, and *sync*. The
+	corresponding *--binary-cache* option takes precedence.
+
 *HOME*
 	Used to derive the default package store path.
 
@@ -69,6 +79,6 @@ _$HOME/.magpkg/store_
 
 # SEE ALSO
 
-*magpkg-init*(1), *magpkg-build*(1), *magpkg-sync*(1),
-*magpkg-uninstall*(1), *magpkg-clean*(1), *magpkg-package*(5),
-*magpkg-store*(5)
+*magpkg-init*(1), *magpkg-build*(1), *magpkg-export*(1),
+*magpkg-sync*(1), *magpkg-uninstall*(1), *magpkg-clean*(1),
+*magpkg-serve-cache*(1), *magpkg-package*(5), *magpkg-store*(5)

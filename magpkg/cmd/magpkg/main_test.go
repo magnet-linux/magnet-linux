@@ -2,12 +2,16 @@ package main
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -15,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
+	graphjsonnet "github.com/andrewchambers/magnet-linux/magpkg/pkggraph/jsonnet"
 	"github.com/andrewchambers/magnet-linux/magpkg/pkgstore"
 )
 
@@ -52,7 +58,7 @@ func TestInitAndBuildCommands(t *testing.T) {
 	manifestContents := fmt.Sprintf(`{
   bootstrap: {
     name: 'bootstrap',
-    build: 'untar',
+    build: { kind: 'unpack' },
     runDeps: [],
     buildDeps: [],
     fetch: [{
@@ -85,10 +91,10 @@ func TestInitAndBuildCommands(t *testing.T) {
 	); err != nil {
 		t.Fatalf("build: %v\nstderr:\n%s", err, stderr.String())
 	}
-	graph, err := pkgstore.PackageGraphFromJsonnetWithOptions(
+	graph, err := graphjsonnet.EvaluateFile(
 		context.Background(),
 		manifest,
-		pkgstore.JsonnetOptions{
+		graphjsonnet.Options{
 			ExtVars: map[string]string{"source_url": sourceURL},
 		},
 	)
@@ -147,7 +153,375 @@ func TestInitAndBuildCommands(t *testing.T) {
 	}
 }
 
+func TestExportCommandWritesStdoutAndAtomicFile(t *testing.T) {
+	t.Setenv(binaryCacheEnvironmentVariable, "")
+	storePath := filepath.Join(t.TempDir(), "store")
+	if err := pkgstore.Init(storePath); err != nil {
+		t.Fatal(err)
+	}
+	sourceArchive := writeSourceArchive(t)
+	sourceContents, err := os.ReadFile(sourceArchive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(sourceContents)
+	sourceURL := (&url.URL{
+		Scheme: "file",
+		Path:   filepath.ToSlash(sourceArchive),
+	}).String()
+	graphFile := filepath.Join(t.TempDir(), "packages.jsonnet")
+	graphContents := fmt.Sprintf(`{
+  environment: {
+    name: 'environment',
+    build: { kind: 'unpack' },
+    runDeps: [],
+    buildDeps: [],
+    fetch: [{
+      filename: 'source.tar',
+      sha256: %q,
+      urls: [%q],
+    }],
+  },
+}
+`, hex.EncodeToString(digest[:]), sourceURL)
+	if err := os.WriteFile(graphFile, []byte(graphContents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := runCLI(
+		context.Background(),
+		[]string{
+			"export",
+			"--store", storePath,
+			"--format", "tar",
+			"--output", "-",
+			graphFile,
+			"environment",
+		},
+		&stdout,
+		&stderr,
+	); err != nil {
+		t.Fatalf("export to stdout: %v\nstderr:\n%s", err, stderr.String())
+	}
+	reader := tar.NewReader(bytes.NewReader(stdout.Bytes()))
+	foundHello := false
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read stdout archive: %v", err)
+		}
+		if header.Name != "hello" {
+			continue
+		}
+		contents, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(contents) != "hello\n" {
+			t.Fatalf("hello contents = %q, want hello", contents)
+		}
+		foundHello = true
+	}
+	if !foundHello {
+		t.Fatal("stdout archive does not contain hello")
+	}
+
+	outputPath := filepath.Join(t.TempDir(), "environment.tar.xz")
+	stdout.Reset()
+	stderr.Reset()
+	if err := runCLI(
+		context.Background(),
+		[]string{
+			"export",
+			"--store", storePath,
+			"--no-build",
+			"--output", outputPath,
+			graphFile,
+			"environment",
+		},
+		&stdout,
+		&stderr,
+	); err != nil {
+		t.Fatalf("export to file: %v\nstderr:\n%s", err, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("file export wrote to stdout: %q", stdout.Bytes())
+	}
+	archive, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xzMagic := []byte{0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00}
+	if !bytes.HasPrefix(archive, xzMagic) {
+		t.Fatalf("file export prefix = %x, want xz", archive[:min(len(archive), 6)])
+	}
+	if err := runCLI(
+		context.Background(),
+		[]string{
+			"export",
+			"--store", storePath,
+			"--no-build",
+			"--output", outputPath,
+			graphFile,
+			"environment",
+		},
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+	); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("second file export error = %v, want existing output error", err)
+	}
+	unchanged, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(archive, unchanged) {
+		t.Fatal("existing export archive was modified")
+	}
+}
+
+func TestResolveExportFormat(t *testing.T) {
+	tests := []struct {
+		output   string
+		explicit string
+		want     pkgstore.ExportFormat
+	}{
+		{output: "environment.tar", want: pkgstore.ExportFormatTar},
+		{output: "environment.tar.gz", want: pkgstore.ExportFormatTarGzip},
+		{output: "environment.tgz", want: pkgstore.ExportFormatTarGzip},
+		{output: "environment.tar.xz", want: pkgstore.ExportFormatTarXZ},
+		{output: "environment.txz", want: pkgstore.ExportFormatTarXZ},
+		{output: "environment.tar.zst", want: pkgstore.ExportFormatTarZstd},
+		{
+			output:   "environment.bundle",
+			explicit: "tar.zst",
+			want:     pkgstore.ExportFormatTarZstd,
+		},
+		{output: "-", explicit: "tar", want: pkgstore.ExportFormatTar},
+	}
+	for _, test := range tests {
+		got, err := resolveExportFormat(test.output, test.explicit)
+		if err != nil {
+			t.Fatalf(
+				"resolveExportFormat(%q, %q): %v",
+				test.output,
+				test.explicit,
+				err,
+			)
+		}
+		if got != test.want {
+			t.Fatalf(
+				"resolveExportFormat(%q, %q) = %q, want %q",
+				test.output,
+				test.explicit,
+				got,
+				test.want,
+			)
+		}
+	}
+	for _, test := range []struct {
+		output   string
+		explicit string
+	}{
+		{output: "-"},
+		{output: "environment"},
+		{output: "environment.tar", explicit: "zip"},
+	} {
+		if _, err := resolveExportFormat(test.output, test.explicit); err == nil {
+			t.Fatalf(
+				"resolveExportFormat(%q, %q) succeeded",
+				test.output,
+				test.explicit,
+			)
+		}
+	}
+}
+
+func TestWriteExportFileDoesNotPublishPartialOutput(t *testing.T) {
+	directory := t.TempDir()
+	output := filepath.Join(directory, "environment.tar")
+	writeErr := errors.New("injected write failure")
+	err := writeExportFile(output, func(writer io.Writer) error {
+		if _, err := writer.Write([]byte("partial")); err != nil {
+			return err
+		}
+		return writeErr
+	})
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("writeExportFile() error = %v, want injected error", err)
+	}
+	if _, err := os.Lstat(output); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("partial output was published: %v", err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temporary export files remain: %v", entries)
+	}
+}
+
+func TestBuildUsesBinaryCacheFromEnvironment(t *testing.T) {
+	t.Setenv(binaryCacheEnvironmentVariable, "")
+	graphFile := filepath.Join(t.TempDir(), "packages.jsonnet")
+	if err := os.WriteFile(
+		graphFile,
+		[]byte(`{
+  cached: {
+    name: 'cached',
+    build: { kind: 'none' },
+    runDeps: [],
+    buildDeps: [],
+    fetch: [],
+  },
+}
+`),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	remotePath := filepath.Join(t.TempDir(), "remote")
+	if err := pkgstore.Init(remotePath); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := runCLI(
+		context.Background(),
+		[]string{"build", "--store", remotePath, graphFile, "cached"},
+		&stdout,
+		&stderr,
+	); err != nil {
+		t.Fatalf("populate remote store: %v\nstderr:\n%s", err, stderr.String())
+	}
+	remoteArtifact := strings.TrimSpace(stdout.String())
+	remoteStore, err := pkgstore.Open(remotePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := pkgstore.NewBinaryCacheHandler(
+		remoteStore,
+		pkgstore.BinaryCacheHandlerOptions{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	localPath := filepath.Join(t.TempDir(), "local")
+	if err := pkgstore.Init(localPath); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(binaryCacheEnvironmentVariable, server.URL)
+	stdout.Reset()
+	stderr.Reset()
+	if err := runCLI(
+		context.Background(),
+		[]string{
+			"build",
+			"--store", localPath,
+			"--cache-only",
+			graphFile,
+			"cached",
+		},
+		&stdout,
+		&stderr,
+	); err != nil {
+		t.Fatalf("cache-only build: %v\nstderr:\n%s", err, stderr.String())
+	}
+	localArtifact := strings.TrimSpace(stdout.String())
+	remoteBytes, err := os.ReadFile(remoteArtifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	localBytes, err := os.ReadFile(localArtifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(localBytes, remoteBytes) {
+		t.Fatal("local artifact differs from binary-cache artifact")
+	}
+}
+
+func TestServeCacheCommand(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "store")
+	if err := pkgstore.Init(storePath); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reader, writer := io.Pipe()
+	result := make(chan error, 1)
+	go func() {
+		err := runCLI(
+			ctx,
+			[]string{
+				"serve-cache",
+				"--store", storePath,
+				"--listen", "127.0.0.1:0",
+				"--no-touch",
+			},
+			writer,
+			&bytes.Buffer{},
+		)
+		_ = writer.CloseWithError(err)
+		result <- err
+	}()
+
+	addressResult := make(chan struct {
+		address string
+		err     error
+	}, 1)
+	go func() {
+		address, err := bufio.NewReader(reader).ReadString('\n')
+		addressResult <- struct {
+			address string
+			err     error
+		}{address: strings.TrimSpace(address), err: err}
+	}()
+	var address string
+	select {
+	case read := <-addressResult:
+		if read.err != nil {
+			t.Fatal(read.err)
+		}
+		address = read.address
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve-cache did not report its listening address")
+	}
+
+	response, err := http.Get(address + "/v1/info")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, readErr := io.Copy(io.Discard, response.Body)
+	closeErr := response.Body.Close()
+	if err := errors.Join(readErr, closeErr); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("cache info status = %s", response.Status)
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve-cache did not shut down")
+	}
+}
+
 func TestSyncAndUninstallCommands(t *testing.T) {
+	t.Setenv(binaryCacheEnvironmentVariable, "")
 	storePath := filepath.Join(t.TempDir(), "store")
 	if err := pkgstore.Init(storePath); err != nil {
 		t.Fatal(err)
@@ -166,7 +540,7 @@ func TestSyncAndUninstallCommands(t *testing.T) {
 	graphContents := fmt.Sprintf(`{
   hello: {
     name: 'hello',
-    build: 'untar',
+    build: { kind: 'unpack' },
     runDeps: [],
     buildDeps: [],
     fetch: [{
@@ -194,6 +568,42 @@ func TestSyncAndUninstallCommands(t *testing.T) {
 	}
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
+	if err := runCLI(
+		context.Background(),
+		[]string{
+			"sync",
+			"--store", storePath,
+			"--dest", destination,
+			"--force",
+			"--no-build",
+			graphFile,
+			"hello",
+		},
+		&stdout,
+		&stderr,
+	); err == nil || !strings.Contains(err.Error(), "has no package artifact") {
+		t.Fatalf("sync --no-build error = %v, want missing artifact error", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if err := runCLI(
+		context.Background(),
+		[]string{
+			"sync",
+			"--store", storePath,
+			"--dest", destination,
+			"--force",
+			"--cache-only",
+			graphFile,
+			"hello",
+		},
+		&stdout,
+		&stderr,
+	); err == nil || !strings.Contains(err.Error(), "no binary cache is configured") {
+		t.Fatalf("sync --cache-only error = %v, want cache configuration error", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
 	if err := runCLI(
 		context.Background(),
 		[]string{
@@ -479,6 +889,16 @@ func TestResolveStorePathUsesDefault(t *testing.T) {
 	}
 }
 
+func TestCommandStoreOpenOptions(t *testing.T) {
+	options := commandStoreOpenOptions("https://cache.example")
+	if options.BinaryCacheURL != "https://cache.example" {
+		t.Fatalf("binary cache URL = %q", options.BinaryCacheURL)
+	}
+	if options.HTTPClient != http.DefaultClient {
+		t.Fatal("HTTP client is not the command's host-aware default client")
+	}
+}
+
 func TestParseCleanAge(t *testing.T) {
 	for input, want := range map[string]time.Duration{
 		"30d":   30 * 24 * time.Hour,
@@ -501,10 +921,10 @@ func TestParseCleanAge(t *testing.T) {
 }
 
 func TestSelectBuildRootsSortsAndDeduplicatesDefaults(t *testing.T) {
-	first := pkgstore.PackageID(strings.Repeat("a", 52))
-	second := pkgstore.PackageID(strings.Repeat("b", 52))
-	graph := &pkgstore.PackageGraph{
-		Roots: map[string]pkgstore.PackageID{
+	first := pkggraph.ID(strings.Repeat("a", 52))
+	second := pkggraph.ID(strings.Repeat("b", 52))
+	graph := &pkggraph.Graph{
+		Roots: map[string]pkggraph.ID{
 			"zeta":  second,
 			"alpha": first,
 			"alias": first,

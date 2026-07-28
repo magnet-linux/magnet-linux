@@ -1,4 +1,4 @@
-package pkgstore_test
+package jsonnet_test
 
 import (
 	"context"
@@ -9,14 +9,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/andrewchambers/magnet-linux/magpkg/pkgstore"
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
+	graphjsonnet "github.com/andrewchambers/magnet-linux/magpkg/pkggraph/jsonnet"
 )
 
-func TestPackageGraphFromJsonnet(t *testing.T) {
+func TestEvaluateFile(t *testing.T) {
 	jsonnetFile := writeJsonnet(t, "packages.jsonnet", `
 		local dependency = {
 			name: "dependency",
-			build: "build dependency",
+			build: { kind: "script", script: "build dependency" },
 			runDeps: [],
 			buildDeps: [],
 			fetch: [],
@@ -24,7 +25,7 @@ func TestPackageGraphFromJsonnet(t *testing.T) {
 
 		local equivalentDependency = {
 			name: "dependency",
-			build: "build dependency",
+			build: { kind: "script", script: "build dependency" },
 			runDeps: [],
 			buildDeps: [],
 			fetch: [],
@@ -32,7 +33,7 @@ func TestPackageGraphFromJsonnet(t *testing.T) {
 
 		local root = {
 			name: "root",
-			build: "build root",
+			build: { kind: "script", script: "build root" },
 			runDeps: [dependency],
 			buildDeps: [dependency],
 			fetch: [{
@@ -53,9 +54,10 @@ func TestPackageGraphFromJsonnet(t *testing.T) {
 		}
 	`)
 
-	graph, err := pkgstore.PackageGraphFromJsonnet(
+	graph, err := graphjsonnet.EvaluateFile(
 		context.Background(),
 		jsonnetFile,
+		graphjsonnet.Options{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -78,31 +80,31 @@ func TestPackageGraphFromJsonnet(t *testing.T) {
 	if graph.Roots["equivalentDependency"] != dependencyID {
 		t.Fatal("equivalent package definitions were not content-deduplicated")
 	}
-	assertPackageID(t, dependencyID)
+	assertID(t, dependencyID)
 
 	rootID := graph.Roots["root"]
-	assertPackageID(t, rootID)
+	assertID(t, rootID)
 	root := graph.Nodes[rootID]
 	if root.Name != "root" {
 		t.Fatalf("root.Name = %q, want %q", root.Name, "root")
 	}
-	if root.Build != "build root" {
-		t.Fatalf("root.Build = %q, want %q", root.Build, "build root")
+	wantBuild := pkggraph.BuildSpec{
+		Kind:   pkggraph.BuildScript,
+		Script: "build root",
 	}
-	if !reflect.DeepEqual(root.BuildEnv, defaultBuildEnvironment()) {
-		t.Fatalf(
-			"root.BuildEnv = %#v, want %#v",
-			root.BuildEnv,
-			defaultBuildEnvironment(),
-		)
+	if root.Build != wantBuild {
+		t.Fatalf("root.Build = %#v, want %#v", root.Build, wantBuild)
 	}
-	if !reflect.DeepEqual(root.RunDeps, []pkgstore.PackageID{dependencyID}) {
+	if root.BuildEnv != nil {
+		t.Fatalf("root.BuildEnv = %#v, want nil overrides", root.BuildEnv)
+	}
+	if !reflect.DeepEqual(root.RunDeps, []pkggraph.ID{dependencyID}) {
 		t.Fatalf("root.RunDeps = %#v, want [%q]", root.RunDeps, dependencyID)
 	}
-	if !reflect.DeepEqual(root.BuildDeps, []pkgstore.PackageID{dependencyID}) {
+	if !reflect.DeepEqual(root.BuildDeps, []pkggraph.ID{dependencyID}) {
 		t.Fatalf("root.BuildDeps = %#v, want [%q]", root.BuildDeps, dependencyID)
 	}
-	wantFetch := []pkgstore.Fetch{{
+	wantFetch := []pkggraph.Fetch{{
 		Filename: "source.tar.gz",
 		SHA256:   strings.Repeat("0", 64),
 		URLs: []string{
@@ -115,19 +117,20 @@ func TestPackageGraphFromJsonnet(t *testing.T) {
 	}
 }
 
-func TestPackageGraphFromJsonnetAllowsOmittedName(t *testing.T) {
+func TestEvaluateFileAllowsOmittedName(t *testing.T) {
 	jsonnetFile := writeJsonnet(t, "unnamed.jsonnet", `{
 		package: {
-			build: "",
+			build: { kind: "none" },
 			runDeps: [],
 			buildDeps: [],
 			fetch: [],
 		},
 	}`)
 
-	graph, err := pkgstore.PackageGraphFromJsonnet(
+	graph, err := graphjsonnet.EvaluateFile(
 		context.Background(),
 		jsonnetFile,
+		graphjsonnet.Options{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -138,11 +141,11 @@ func TestPackageGraphFromJsonnetAllowsOmittedName(t *testing.T) {
 	}
 }
 
-func TestPackageGraphFromJsonnetResolvesBuildEnvironment(t *testing.T) {
+func TestEvaluateFileNormalizesBuildEnvironmentOverrides(t *testing.T) {
 	jsonnetFile := writeJsonnet(t, "environment.jsonnet", `
 		local package = {
 			name: "package",
-			build: "build",
+			build: { kind: "script", script: "build" },
 			runDeps: [],
 			buildDeps: [],
 			fetch: [],
@@ -169,9 +172,10 @@ func TestPackageGraphFromJsonnetResolvesBuildEnvironment(t *testing.T) {
 		}
 	`)
 
-	graph, err := pkgstore.PackageGraphFromJsonnet(
+	graph, err := graphjsonnet.EvaluateFile(
 		context.Background(),
 		jsonnetFile,
+		graphjsonnet.Options{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -186,22 +190,23 @@ func TestPackageGraphFromJsonnetResolvesBuildEnvironment(t *testing.T) {
 		t.Fatal("build environment override did not change the package ID")
 	}
 
-	wantCustom := defaultBuildEnvironment()
-	wantCustom["PATH"] = "/bin"
-	wantCustom["CUSTOM"] = "custom value"
+	wantCustom := map[string]string{
+		"PATH":   "/bin",
+		"CUSTOM": "custom value",
+	}
 	if got := graph.Nodes[customID].BuildEnv; !reflect.DeepEqual(got, wantCustom) {
 		t.Fatalf("custom BuildEnv = %#v, want %#v", got, wantCustom)
 	}
 }
 
-func TestPackageGraphFromJsonnetImports(t *testing.T) {
+func TestEvaluateFileImports(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(dir, "bootstrap.jsonnet"),
 		[]byte(`{
 			bootstrap: {
 				name: "bootstrap",
-				build: "bootstrap",
+				build: { kind: "script", script: "bootstrap" },
 				runDeps: [],
 				buildDeps: [],
 				fetch: [],
@@ -218,7 +223,7 @@ func TestPackageGraphFromJsonnetImports(t *testing.T) {
 			local imported = import "./bootstrap.jsonnet";
 			local root = {
 				name: "root",
-				build: "root",
+				build: { kind: "script", script: "root" },
 				runDeps: [],
 				buildDeps: [imported.bootstrap],
 				fetch: [],
@@ -230,9 +235,10 @@ func TestPackageGraphFromJsonnetImports(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	graph, err := pkgstore.PackageGraphFromJsonnet(
+	graph, err := graphjsonnet.EvaluateFile(
 		context.Background(),
 		jsonnetFile,
+		graphjsonnet.Options{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -251,11 +257,11 @@ func TestPackageGraphFromJsonnetImports(t *testing.T) {
 	}
 }
 
-func TestPackageGraphFromJsonnetIsDeterministic(t *testing.T) {
+func TestEvaluateFileIsDeterministic(t *testing.T) {
 	source := `{
 		package: {
 			name: "package",
-			build: "build",
+			build: { kind: "script", script: "build" },
 			runDeps: [],
 			buildDeps: [],
 			fetch: [],
@@ -264,11 +270,19 @@ func TestPackageGraphFromJsonnetIsDeterministic(t *testing.T) {
 	firstFile := writeJsonnet(t, "first.jsonnet", source)
 	secondFile := writeJsonnet(t, "second.jsonnet", source)
 
-	first, err := pkgstore.PackageGraphFromJsonnet(context.Background(), firstFile)
+	first, err := graphjsonnet.EvaluateFile(
+		context.Background(),
+		firstFile,
+		graphjsonnet.Options{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := pkgstore.PackageGraphFromJsonnet(context.Background(), secondFile)
+	second, err := graphjsonnet.EvaluateFile(
+		context.Background(),
+		secondFile,
+		graphjsonnet.Options{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,11 +292,11 @@ func TestPackageGraphFromJsonnetIsDeterministic(t *testing.T) {
 	}
 }
 
-func TestPackageGraphFromJsonnetRejectsDependencyCycle(t *testing.T) {
+func TestEvaluateFileRejectsDependencyCycle(t *testing.T) {
 	jsonnetFile := writeJsonnet(t, "cycle.jsonnet", `
 		local package = {
 			name: "cyclic",
-			build: "build",
+			build: { kind: "script", script: "build" },
 			runDeps: [package],
 			buildDeps: [],
 			fetch: [],
@@ -290,16 +304,17 @@ func TestPackageGraphFromJsonnetRejectsDependencyCycle(t *testing.T) {
 		{ package: package }
 	`)
 
-	_, err := pkgstore.PackageGraphFromJsonnet(
+	_, err := graphjsonnet.EvaluateFile(
 		context.Background(),
 		jsonnetFile,
+		graphjsonnet.Options{},
 	)
 	if err == nil || !strings.Contains(err.Error(), "dependency cycle") {
 		t.Fatalf("error = %v, want dependency cycle error", err)
 	}
 }
 
-func TestPackageGraphFromJsonnetValidatesDefinitions(t *testing.T) {
+func TestEvaluateFileValidatesDefinitions(t *testing.T) {
 	tests := []struct {
 		name       string
 		definition string
@@ -317,7 +332,7 @@ func TestPackageGraphFromJsonnetValidatesDefinitions(t *testing.T) {
 			definition: `{
 				package: {
 					name: "package",
-					build: "build",
+					build: { kind: "script", script: "build" },
 					runDeps: [],
 					buildDeps: [],
 				},
@@ -329,7 +344,7 @@ func TestPackageGraphFromJsonnetValidatesDefinitions(t *testing.T) {
 			definition: `{
 				package: {
 					name: "package",
-					build: "build",
+					build: { kind: "script", script: "build" },
 					runDeps: "not an array",
 					buildDeps: [],
 					fetch: [],
@@ -342,7 +357,7 @@ func TestPackageGraphFromJsonnetValidatesDefinitions(t *testing.T) {
 			definition: `{
 				package: {
 					name: "../package",
-					build: "build",
+					build: { kind: "script", script: "build" },
 					runDeps: [],
 					buildDeps: [],
 					fetch: [],
@@ -355,7 +370,7 @@ func TestPackageGraphFromJsonnetValidatesDefinitions(t *testing.T) {
 			definition: `{
 				package: {
 					name: "package",
-					build: "build",
+					build: { kind: "script", script: "build" },
 					runDeps: [],
 					buildDeps: [],
 					fetch: [{
@@ -368,11 +383,52 @@ func TestPackageGraphFromJsonnetValidatesDefinitions(t *testing.T) {
 			wantError: "expected a 64-character hexadecimal SHA-256 digest",
 		},
 		{
+			name: "fetch filename path",
+			definition: `{
+				package: {
+					name: "package",
+					build: { kind: "script", script: "build" },
+					runDeps: [],
+					buildDeps: [],
+					fetch: [{
+						filename: "sources/source.tar",
+						sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+						urls: [],
+					}],
+				},
+			}`,
+			wantError: "must be a single path component",
+		},
+		{
+			name: "duplicate fetch filename",
+			definition: `{
+				package: {
+					name: "package",
+					build: { kind: "script", script: "build" },
+					runDeps: [],
+					buildDeps: [],
+					fetch: [
+						{
+							filename: "source.tar",
+							sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+							urls: [],
+						},
+						{
+							filename: "source.tar",
+							sha256: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+							urls: [],
+						},
+					],
+				},
+			}`,
+			wantError: "duplicate fetch filename",
+		},
+		{
 			name: "build environment type",
 			definition: `{
 				package: {
 					name: "package",
-					build: "build",
+					build: { kind: "script", script: "build" },
 					buildEnv: [],
 					runDeps: [],
 					buildDeps: [],
@@ -386,7 +442,7 @@ func TestPackageGraphFromJsonnetValidatesDefinitions(t *testing.T) {
 			definition: `{
 				package: {
 					name: "package",
-					build: "build",
+					build: { kind: "script", script: "build" },
 					buildEnv: { PATH: 42 },
 					runDeps: [],
 					buildDeps: [],
@@ -400,7 +456,7 @@ func TestPackageGraphFromJsonnetValidatesDefinitions(t *testing.T) {
 			definition: `{
 				package: {
 					name: "package",
-					build: "build",
+					build: { kind: "script", script: "build" },
 					buildEnv: { "INVALID-NAME": "value" },
 					runDeps: [],
 					buildDeps: [],
@@ -414,7 +470,7 @@ func TestPackageGraphFromJsonnetValidatesDefinitions(t *testing.T) {
 			definition: `{
 				package: {
 					name: "package",
-					build: "build",
+					build: { kind: "script", script: "build" },
 					buildEnv: { BUILD_PARALLELISM: "99" },
 					runDeps: [],
 					buildDeps: [],
@@ -428,9 +484,10 @@ func TestPackageGraphFromJsonnetValidatesDefinitions(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			jsonnetFile := writeJsonnet(t, "invalid.jsonnet", test.definition)
-			_, err := pkgstore.PackageGraphFromJsonnet(
+			_, err := graphjsonnet.EvaluateFile(
 				context.Background(),
 				jsonnetFile,
+				graphjsonnet.Options{},
 			)
 			if err == nil || !strings.Contains(err.Error(), test.wantError) {
 				t.Fatalf("error = %v, want error containing %q", err, test.wantError)
@@ -439,14 +496,38 @@ func TestPackageGraphFromJsonnetValidatesDefinitions(t *testing.T) {
 	}
 }
 
-func TestPackageGraphFromJsonnetHonorsCanceledContext(t *testing.T) {
+func TestEvaluateFileHonorsCanceledContext(t *testing.T) {
 	jsonnetFile := writeJsonnet(t, "package.jsonnet", `{}`)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := pkgstore.PackageGraphFromJsonnet(ctx, jsonnetFile)
+	_, err := graphjsonnet.EvaluateFile(
+		ctx,
+		jsonnetFile,
+		graphjsonnet.Options{},
+	)
 	if err != context.Canceled {
 		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
+
+func TestRepositoryPackageGraphs(t *testing.T) {
+	for _, name := range []string{
+		"bootstrap.jsonnet",
+		"bubblewrap.jsonnet",
+		"core.jsonnet",
+		"hello.jsonnet",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join("..", "..", "..", "packages", name)
+			if _, err := graphjsonnet.EvaluateFile(
+				context.Background(),
+				path,
+				graphjsonnet.Options{},
+			); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
@@ -459,29 +540,18 @@ func writeJsonnet(t *testing.T, name string, source string) string {
 	return path
 }
 
-func assertPackageID(t *testing.T, id pkgstore.PackageID) {
+func assertID(t *testing.T, id pkggraph.ID) {
 	t.Helper()
 	encoding := base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").
 		WithPadding(base32.NoPadding)
 	decoded, err := encoding.DecodeString(string(id))
 	if err != nil {
-		t.Fatalf("PackageID %q is not lowercase Base32: %v", id, err)
+		t.Fatalf("ID %q is not lowercase Base32: %v", id, err)
 	}
 	if len(decoded) != 32 {
-		t.Fatalf("PackageID %q decodes to %d bytes, want 32", id, len(decoded))
+		t.Fatalf("ID %q decodes to %d bytes, want 32", id, len(decoded))
 	}
 	if got, want := len(id), 52; got != want {
-		t.Fatalf("PackageID %q has length %d, want %d", id, got, want)
-	}
-}
-
-func defaultBuildEnvironment() map[string]string {
-	return map[string]string{
-		"PATH":         "/usr/bin:/bin:/usr/sbin:/sbin",
-		"HOME":         "/build",
-		"SHELL":        "/bin/sh",
-		"CONFIG_SHELL": "/bin/sh",
-		"LC_ALL":       "C",
-		"TZ":           "UTC",
+		t.Fatalf("ID %q has length %d, want %d", id, got, want)
 	}
 }

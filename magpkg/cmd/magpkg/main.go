@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	storeEnvironmentVariable = "MAGPKG_STORE"
-	defaultCleanAge          = 7 * 24 * time.Hour
+	storeEnvironmentVariable       = "MAGPKG_STORE"
+	binaryCacheEnvironmentVariable = "MAGPKG_BINARY_CACHE"
+	defaultCleanAge                = 7 * 24 * time.Hour
 )
 
 func main() {
@@ -53,12 +54,16 @@ func runCLI(
 		return runInit(args[1:], stdout, stderr)
 	case "build":
 		return runBuild(ctx, args[1:], stdout, stderr)
+	case "export":
+		return runExport(ctx, args[1:], stdout, stderr)
 	case "sync":
 		return runSync(ctx, args[1:], stdout, stderr)
 	case "uninstall":
 		return runUninstall(ctx, args[1:], stdout, stderr)
 	case "clean":
 		return runClean(ctx, args[1:], stdout, stderr)
+	case "serve-cache":
+		return runServeCache(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		writeUsage(stdout)
 		return nil
@@ -194,6 +199,7 @@ type plainFetchProgress struct {
 
 type plainFetchProgressKey struct {
 	filename string
+	sha256   string
 	url      string
 	phase    pkgstore.FetchProgressPhase
 }
@@ -258,6 +264,7 @@ func (progress *plainFetchProgress) reportTransfer(
 ) {
 	key := plainFetchProgressKey{
 		filename: event.Filename,
+		sha256:   event.SHA256,
 		url:      event.URL,
 		phase:    event.Phase,
 	}
@@ -441,9 +448,11 @@ func writeUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "commands:")
 	fmt.Fprintln(writer, "  init   initialize a package store")
 	fmt.Fprintln(writer, "  build  build roots from a Jsonnet package graph")
+	fmt.Fprintln(writer, "  export  export runtime closures as a tar archive")
 	fmt.Fprintln(writer, "  sync   synchronize a runtime closure into a destination")
 	fmt.Fprintln(writer, "  uninstall  remove a synchronized runtime closure")
 	fmt.Fprintln(writer, "  clean  remove old fetches and package artifacts")
+	fmt.Fprintln(writer, "  serve-cache  serve package artifacts over HTTP")
 	fmt.Fprintln(writer, "")
 	fmt.Fprintln(writer, "Run `magpkg <command> --help` for command-specific help.")
 }

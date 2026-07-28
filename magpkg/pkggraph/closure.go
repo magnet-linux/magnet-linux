@@ -1,4 +1,4 @@
-package pkgstore
+package pkggraph
 
 import (
 	"errors"
@@ -8,24 +8,30 @@ import (
 // RuntimeClosure returns roots and their transitive runtime dependencies in
 // deterministic dependency-first installation order. Roots and dependencies
 // retain declaration order and duplicate packages appear only once.
-func (graph *PackageGraph) RuntimeClosure(
-	roots ...PackageID,
-) ([]PackageID, error) {
+func (graph *Graph) RuntimeClosure(
+	roots ...ID,
+) ([]ID, error) {
 	if graph == nil {
-		return nil, errors.New("pkgstore: package graph is nil")
+		return nil, errors.New("pkggraph: package graph is nil")
 	}
 	if len(roots) == 0 {
-		return nil, errors.New("pkgstore: runtime closure has no roots")
+		return nil, errors.New("pkggraph: runtime closure has no roots")
 	}
 
-	state := make(map[PackageID]visitState)
-	order := make([]PackageID, 0)
-	var visit func(PackageID) error
-	visit = func(packageID PackageID) error {
+	type visitState uint8
+	const (
+		visitUnseen visitState = iota
+		visitActive
+		visitDone
+	)
+	state := make(map[ID]visitState)
+	order := make([]ID, 0)
+	var visit func(ID) error
+	visit = func(packageID ID) error {
 		switch state[packageID] {
 		case visitActive:
 			return fmt.Errorf(
-				"pkgstore: runtime dependency cycle through package %s",
+				"pkggraph: runtime dependency cycle through package %s",
 				packageID,
 			)
 		case visitDone:
@@ -34,11 +40,11 @@ func (graph *PackageGraph) RuntimeClosure(
 		definition, ok := graph.Nodes[packageID]
 		if !ok {
 			return fmt.Errorf(
-				"pkgstore: package %q is not in the graph",
+				"pkggraph: package %q is not in the graph",
 				packageID,
 			)
 		}
-		if err := validatePackageDefinition(packageID, definition); err != nil {
+		if err := ValidateIdentity(packageID, definition); err != nil {
 			return err
 		}
 		state[packageID] = visitActive

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
 )
 
 const (
@@ -23,7 +25,7 @@ func validateStore(store *Store) error {
 	return nil
 }
 
-func packageArtifactFilename(packageID PackageID, packageName string) string {
+func packageArtifactFilename(packageID pkggraph.ID, packageName string) string {
 	filename := string(packageID) + packageArtifactSuffix
 	if packageName != "" {
 		filename = packageName + "-" + filename
@@ -32,7 +34,7 @@ func packageArtifactFilename(packageID PackageID, packageName string) string {
 }
 
 func (s *Store) packageArtifactPath(
-	packageID PackageID,
+	packageID pkggraph.ID,
 	packageName string,
 ) string {
 	return filepath.Join(
@@ -42,7 +44,7 @@ func (s *Store) packageArtifactPath(
 	)
 }
 
-func (s *Store) packageLockPath(packageID PackageID) string {
+func (s *Store) packageLockPath(packageID pkggraph.ID) string {
 	return filepath.Join(
 		s.path,
 		buildLockDirectory,
@@ -50,12 +52,12 @@ func (s *Store) packageLockPath(packageID PackageID) string {
 	)
 }
 
-func (s *Store) packageWorkPath(packageID PackageID) string {
+func (s *Store) packageWorkPath(packageID pkggraph.ID) string {
 	return filepath.Join(s.path, buildWorkDirectory, string(packageID))
 }
 
 func (s *Store) packageAvailable(
-	packageID PackageID,
+	packageID pkggraph.ID,
 	packageName string,
 ) (bool, error) {
 	return regularPackageArtifact(s.packageArtifactPath(packageID, packageName))
@@ -63,7 +65,7 @@ func (s *Store) packageAvailable(
 
 func (s *Store) packageAvailableForUse(
 	ctx context.Context,
-	packageID PackageID,
+	packageID pkggraph.ID,
 	packageName string,
 ) (available bool, retErr error) {
 	artifactPath := s.packageArtifactPath(packageID, packageName)
@@ -97,7 +99,7 @@ func (s *Store) packageAvailableForUse(
 
 func (s *Store) usePackageArtifact(
 	ctx context.Context,
-	packageID PackageID,
+	packageID pkggraph.ID,
 	packageName string,
 	use func(string) error,
 ) (retErr error) {

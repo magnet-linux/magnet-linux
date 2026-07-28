@@ -16,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
 	"golang.org/x/sys/unix"
 )
 
@@ -36,14 +37,14 @@ const (
 
 type syncManifest struct {
 	Version  int                   `json:"version"`
-	Roots    []PackageID           `json:"roots"`
+	Roots    []pkggraph.ID         `json:"roots"`
 	Packages []syncManifestPackage `json:"packages"`
 	Entries  []syncManifestEntry   `json:"entries"`
 }
 
 type syncManifestPackage struct {
-	ID   PackageID `json:"id"`
-	Name string    `json:"name,omitempty"`
+	ID   pkggraph.ID `json:"id"`
+	Name string      `json:"name,omitempty"`
 }
 
 type syncManifestEntry struct {

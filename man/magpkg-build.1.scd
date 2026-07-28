@@ -22,7 +22,10 @@ which resolve to the same package ID are built once.
 
 The final package artifact path for each selected root is written to standard
 output. Fetch progress and line-prefixed package build output are written to
-standard error. Already available package artifacts are reused.
+standard error. Already available package artifacts are reused. When a binary
+cache is configured, missing artifacts are requested from it before build
+planning. A cache hit omits that package's build-only dependencies and source
+fetches.
 
 # OPTIONS
 
@@ -32,6 +35,15 @@ standard error. Already available package artifacts are reused.
 
 *--store* _PATH_
 	Use _PATH_ as the package store.
+
+*--binary-cache* _URL_
+	Request missing package artifacts from _URL_. Without this option,
+	*MAGPKG_BINARY_CACHE* is used.
+
+*--cache-only*
+	Permit existing local artifacts and binary-cache substitutions, but never
+	fetch package sources or execute local builds. A required cache miss is an
+	error.
 
 *--jobs* _N_
 	Run at most _N_ package builds concurrently. The default is 1. A blocked
@@ -84,5 +96,6 @@ magpkg build --ext-str mirror=https://mirror.example packages.jsonnet
 
 # SEE ALSO
 
-*magpkg*(1), *magpkg-init*(1), *magpkg-package*(5), *magpkg-store*(5),
+*magpkg*(1), *magpkg-init*(1), *magpkg-export*(1),
+*magpkg-serve-cache*(1), *magpkg-package*(5), *magpkg-store*(5),
 *jsonnet*(1)

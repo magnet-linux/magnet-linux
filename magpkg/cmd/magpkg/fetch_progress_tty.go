@@ -37,6 +37,7 @@ func newFetchProgressRenderer(
 
 type ttyFetchProgressKey struct {
 	filename string
+	sha256   string
 	url      string
 }
 
@@ -73,6 +74,7 @@ func (progress *ttyFetchProgress) Report(event pkgstore.FetchProgress) {
 
 	key := ttyFetchProgressKey{
 		filename: event.Filename,
+		sha256:   event.SHA256,
 		url:      event.URL,
 	}
 	switch event.Phase {

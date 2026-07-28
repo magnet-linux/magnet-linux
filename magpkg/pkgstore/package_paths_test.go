@@ -6,10 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
 )
 
 func TestPackageArtifactFilename(t *testing.T) {
-	packageID := PackageID(strings.Repeat("a", packageIDLength))
+	packageID := pkggraph.ID(strings.Repeat("a", pkggraph.IDLength))
 	if got, want := packageArtifactFilename(packageID, "gcc"), "gcc-"+string(packageID)+".tar.zst"; got != want {
 		t.Fatalf("packageArtifactFilename() = %q, want %q", got, want)
 	}
@@ -20,7 +22,7 @@ func TestPackageArtifactFilename(t *testing.T) {
 
 func TestPackageAvailableDoesNotSearchOtherFilenames(t *testing.T) {
 	store := openTestStore(t)
-	packageID := PackageID(strings.Repeat("b", packageIDLength))
+	packageID := pkggraph.ID(strings.Repeat("b", pkggraph.IDLength))
 	unnamedPath := store.packageArtifactPath(packageID, "")
 	if err := os.MkdirAll(filepath.Dir(unnamedPath), 0o755); err != nil {
 		t.Fatal(err)
@@ -47,11 +49,11 @@ func TestPackageAvailableDoesNotSearchOtherFilenames(t *testing.T) {
 
 func TestBuildPublishesUnnamedPackageArtifact(t *testing.T) {
 	store := openTestStore(t)
-	definition := PackageDefinition{}
-	packageID := testPackageID(t, definition)
-	graph := &PackageGraph{
-		Nodes: map[PackageID]PackageDefinition{packageID: definition},
-		Roots: map[string]PackageID{"unnamed": packageID},
+	definition := pkggraph.Definition{Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone}}
+	packageID := testID(t, definition)
+	graph := &pkggraph.Graph{
+		Nodes: map[pkggraph.ID]pkggraph.Definition{packageID: definition},
+		Roots: map[string]pkggraph.ID{"unnamed": packageID},
 	}
 
 	pkg, err := store.Build(context.Background(), graph, packageID)
@@ -64,35 +66,5 @@ func TestBuildPublishesUnnamedPackageArtifact(t *testing.T) {
 	}
 	if _, err := os.Stat(want); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestValidatePackageName(t *testing.T) {
-	valid := []string{
-		"",
-		"a",
-		"gcc-15.1.0",
-		"libstdc++-rt",
-		"package_name",
-		strings.Repeat("a", maximumPackageNameLength),
-	}
-	for _, name := range valid {
-		if err := validatePackageName(name); err != nil {
-			t.Errorf("validatePackageName(%q): %v", name, err)
-		}
-	}
-
-	invalid := []string{
-		".hidden",
-		"-option",
-		"has space",
-		"has/slash",
-		"naïve",
-		strings.Repeat("a", maximumPackageNameLength+1),
-	}
-	for _, name := range invalid {
-		if err := validatePackageName(name); err == nil {
-			t.Errorf("validatePackageName(%q) succeeded", name)
-		}
 	}
 }

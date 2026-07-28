@@ -4,70 +4,23 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
+
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
 )
-
-func TestRuntimeClosureIsDependencyFirstAndExcludesBuildDeps(t *testing.T) {
-	sharedDefinition := PackageDefinition{Name: "shared"}
-	sharedID := testPackageID(t, sharedDefinition)
-	firstDefinition := PackageDefinition{
-		Name:    "first",
-		RunDeps: []PackageID{sharedID},
-	}
-	firstID := testPackageID(t, firstDefinition)
-	secondDefinition := PackageDefinition{Name: "second"}
-	secondID := testPackageID(t, secondDefinition)
-	buildOnlyDefinition := PackageDefinition{Name: "build-only"}
-	buildOnlyID := testPackageID(t, buildOnlyDefinition)
-	rootDefinition := PackageDefinition{
-		Name:      "root",
-		RunDeps:   []PackageID{firstID, secondID},
-		BuildDeps: []PackageID{buildOnlyID},
-	}
-	rootID := testPackageID(t, rootDefinition)
-	otherRootDefinition := PackageDefinition{
-		Name:    "other-root",
-		RunDeps: []PackageID{secondID},
-	}
-	otherRootID := testPackageID(t, otherRootDefinition)
-
-	graph := &PackageGraph{Nodes: map[PackageID]PackageDefinition{
-		sharedID:    sharedDefinition,
-		firstID:     firstDefinition,
-		secondID:    secondDefinition,
-		buildOnlyID: buildOnlyDefinition,
-		rootID:      rootDefinition,
-		otherRootID: otherRootDefinition,
-	}}
-	got, err := graph.RuntimeClosure(rootID, otherRootID, rootID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []PackageID{
-		sharedID,
-		firstID,
-		secondID,
-		rootID,
-		otherRootID,
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("RuntimeClosure() = %v, want %v", got, want)
-	}
-}
 
 func TestExtractPackagesUsesOrderedOverlay(t *testing.T) {
 	store := openTestStore(t)
-	firstDefinition := PackageDefinition{Name: "first"}
-	firstID := testPackageID(t, firstDefinition)
-	secondDefinition := PackageDefinition{Name: "second"}
-	secondID := testPackageID(t, secondDefinition)
-	graph := &PackageGraph{Nodes: map[PackageID]PackageDefinition{
+	firstDefinition := pkggraph.Definition{Name: "first", Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone}}
+	firstID := testID(t, firstDefinition)
+	secondDefinition := pkggraph.Definition{Name: "second", Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone}}
+	secondID := testID(t, secondDefinition)
+	graph := &pkggraph.Graph{Nodes: map[pkggraph.ID]pkggraph.Definition{
 		firstID:  firstDefinition,
 		secondID: secondDefinition,
 	}}
 	writeArchive := func(
-		id PackageID,
+		id pkggraph.ID,
 		name string,
 		contents string,
 	) {
@@ -102,7 +55,7 @@ func TestExtractPackagesUsesOrderedOverlay(t *testing.T) {
 	if err := store.ExtractPackages(
 		context.Background(),
 		graph,
-		[]PackageID{firstID, secondID},
+		[]pkggraph.ID{firstID, secondID},
 		destination,
 	); err != nil {
 		t.Fatal(err)

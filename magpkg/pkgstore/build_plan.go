@@ -2,13 +2,12 @@ package pkgstore
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
+
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
 )
 
 // BuildDisposition describes how a package was expected to be realized when
@@ -20,30 +19,49 @@ const (
 	// local store when the plan was created.
 	BuildDispositionAvailable BuildDisposition = "available"
 
-	// BuildDispositionLocal means the package must be built from source.
-	BuildDispositionLocal BuildDisposition = "build"
+	// BuildDispositionNeedsBuild means the package must be built from source.
+	BuildDispositionNeedsBuild BuildDisposition = "build"
 )
 
-// PlannedPackage is one immutable step in a BuildPlan. Prerequisites are
-// ordered before the package in BuildPlan.Packages.
+// PlannedPackage describes one step returned when inspecting a BuildPlan.
+// Mutating the returned value does not modify the plan.
 type PlannedPackage struct {
-	ID            PackageID
-	Definition    PackageDefinition
-	Prerequisites []PackageID
+	ID            pkggraph.ID
+	Definition    pkggraph.Definition
+	Prerequisites []pkggraph.ID
 	Disposition   BuildDisposition
 }
 
-// BuildPlan is a deterministic, dependency-first snapshot of the work needed
-// to realize Roots.
+// BuildPlan is an immutable, store-bound, dependency-first snapshot of the
+// work needed to realize its roots.
 //
 // A plan may be safely executed by more than one process. Package locks and
 // atomic artifact publication decide which process performs each build.
 type BuildPlan struct {
-	Roots    []PackageID
-	Packages []PlannedPackage
+	storePath string
+	roots     []pkggraph.ID
+	packages  []PlannedPackage
 }
 
-const maximumPackageNameLength = 128
+// Roots returns the deduplicated requested package IDs.
+func (plan *BuildPlan) Roots() []pkggraph.ID {
+	if plan == nil {
+		return nil
+	}
+	return slices.Clone(plan.roots)
+}
+
+// Packages returns the plan steps in dependency-first order.
+func (plan *BuildPlan) Packages() []PlannedPackage {
+	if plan == nil {
+		return nil
+	}
+	packages := make([]PlannedPackage, len(plan.packages))
+	for index, planned := range plan.packages {
+		packages[index] = clonePlannedPackage(planned)
+	}
+	return packages
+}
 
 // DefaultFetchJobs is the default maximum number of source fetches performed
 // concurrently by FetchBuildInputs.
@@ -54,8 +72,8 @@ const DefaultFetchJobs = 4
 // contribute both runtime and build dependencies.
 func (s *Store) PlanBuild(
 	ctx context.Context,
-	graph *PackageGraph,
-	packageIDs ...PackageID,
+	graph *pkggraph.Graph,
+	packageIDs ...pkggraph.ID,
 ) (*BuildPlan, error) {
 	if err := validateStore(s); err != nil {
 		return nil, err
@@ -66,6 +84,9 @@ func (s *Store) PlanBuild(
 	if graph == nil {
 		return nil, errors.New("pkgstore: package graph is nil")
 	}
+	if err := graph.Validate(); err != nil {
+		return nil, err
+	}
 	if len(packageIDs) == 0 {
 		return nil, errors.New("pkgstore: build plan has no roots")
 	}
@@ -74,10 +95,10 @@ func (s *Store) PlanBuild(
 		ctx:   ctx,
 		store: s,
 		graph: graph,
-		state: make(map[PackageID]visitState),
+		state: make(map[pkggraph.ID]visitState),
 	}
-	roots := make([]PackageID, 0, len(packageIDs))
-	rootSet := make(map[PackageID]struct{}, len(packageIDs))
+	roots := make([]pkggraph.ID, 0, len(packageIDs))
+	rootSet := make(map[pkggraph.ID]struct{}, len(packageIDs))
 	for _, packageID := range packageIDs {
 		if _, exists := rootSet[packageID]; exists {
 			continue
@@ -90,10 +111,11 @@ func (s *Store) PlanBuild(
 	}
 
 	plan := &BuildPlan{
-		Roots:    roots,
-		Packages: planner.packages,
+		storePath: s.path,
+		roots:     roots,
+		packages:  planner.packages,
 	}
-	if err := validateBuildPlan(plan); err != nil {
+	if err := validateBuildPlanForStore(s, plan); err != nil {
 		return nil, err
 	}
 	return plan, nil
@@ -105,6 +127,7 @@ type FetchInputsOptions struct {
 	// Zero selects DefaultFetchJobs.
 	Jobs int
 
+	// Progress receives concurrent source-fetch progress updates.
 	Progress FetchProgressFunc
 }
 
@@ -126,7 +149,7 @@ func (s *Store) FetchBuildInputsWithOptions(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := validateBuildPlan(plan); err != nil {
+	if err := validateBuildPlanForStore(s, plan); err != nil {
 		return err
 	}
 	if options.Jobs < 0 {
@@ -137,14 +160,14 @@ func (s *Store) FetchBuildInputsWithOptions(
 	}
 
 	type fetchTask struct {
-		packageID   PackageID
+		packageID   pkggraph.ID
 		packageName string
-		source      Fetch
+		source      pkggraph.Fetch
 	}
 	tasks := make([]fetchTask, 0)
 	fetched := make(map[string]struct{})
-	for _, planned := range plan.Packages {
-		if planned.Disposition != BuildDispositionLocal {
+	for _, planned := range plan.packages {
+		if planned.Disposition != BuildDispositionNeedsBuild {
 			continue
 		}
 		available, err := s.packageAvailableForUse(
@@ -239,12 +262,12 @@ const (
 type buildPlanner struct {
 	ctx      context.Context
 	store    *Store
-	graph    *PackageGraph
-	state    map[PackageID]visitState
+	graph    *pkggraph.Graph
+	state    map[pkggraph.ID]visitState
 	packages []PlannedPackage
 }
 
-func (p *buildPlanner) visit(packageID PackageID) error {
+func (p *buildPlanner) visit(packageID pkggraph.ID) error {
 	if err := p.ctx.Err(); err != nil {
 		return err
 	}
@@ -259,7 +282,7 @@ func (p *buildPlanner) visit(packageID PackageID) error {
 	if !ok {
 		return fmt.Errorf("pkgstore: package %q is not in the graph", packageID)
 	}
-	if err := validatePackageDefinition(packageID, definition); err != nil {
+	if err := pkggraph.ValidateIdentity(packageID, definition); err != nil {
 		return err
 	}
 
@@ -271,14 +294,14 @@ func (p *buildPlanner) visit(packageID PackageID) error {
 	if err != nil {
 		return fmt.Errorf("inspect package %s: %w", packageID, err)
 	}
-	disposition := BuildDispositionLocal
-	prerequisites := append([]PackageID(nil), definition.RunDeps...)
+	disposition := BuildDispositionNeedsBuild
+	prerequisites := append([]pkggraph.ID(nil), definition.RunDeps...)
 	if available {
 		disposition = BuildDispositionAvailable
 	} else {
 		prerequisites = append(prerequisites, definition.BuildDeps...)
 	}
-	prerequisites = deduplicatePackageIDs(prerequisites)
+	prerequisites = deduplicateIDs(prerequisites)
 
 	p.state[packageID] = visitActive
 	for _, dependency := range prerequisites {
@@ -289,7 +312,7 @@ func (p *buildPlanner) visit(packageID PackageID) error {
 	p.state[packageID] = visitDone
 	p.packages = append(p.packages, PlannedPackage{
 		ID:            packageID,
-		Definition:    clonePackageDefinition(definition),
+		Definition:    pkggraph.CloneDefinition(definition),
 		Prerequisites: slices.Clone(prerequisites),
 		Disposition:   disposition,
 	})
@@ -300,19 +323,22 @@ func validateBuildPlan(plan *BuildPlan) error {
 	if plan == nil {
 		return errors.New("pkgstore: build plan is nil")
 	}
-	if len(plan.Roots) == 0 {
+	if len(plan.roots) == 0 {
 		return errors.New("pkgstore: build plan has no roots")
 	}
-	seen := make(map[PackageID]struct{}, len(plan.Packages))
-	for index, planned := range plan.Packages {
+	seen := make(map[pkggraph.ID]struct{}, len(plan.packages))
+	for index, planned := range plan.packages {
 		if _, ok := seen[planned.ID]; ok {
 			return fmt.Errorf("pkgstore: package %s occurs more than once in build plan", planned.ID)
 		}
-		if err := validatePackageDefinition(planned.ID, planned.Definition); err != nil {
+		if err := pkggraph.ValidateIdentity(
+			planned.ID,
+			planned.Definition,
+		); err != nil {
 			return fmt.Errorf("pkgstore: build plan package %d: %w", index, err)
 		}
 		switch planned.Disposition {
-		case BuildDispositionAvailable, BuildDispositionLocal:
+		case BuildDispositionAvailable, BuildDispositionNeedsBuild:
 		default:
 			return fmt.Errorf(
 				"pkgstore: package %s has invalid build disposition %q",
@@ -322,13 +348,13 @@ func validateBuildPlan(plan *BuildPlan) error {
 		}
 
 		expected := planned.Definition.RunDeps
-		if planned.Disposition == BuildDispositionLocal {
+		if planned.Disposition == BuildDispositionNeedsBuild {
 			expected = append(
 				slices.Clone(planned.Definition.RunDeps),
 				planned.Definition.BuildDeps...,
 			)
 		}
-		expected = deduplicatePackageIDs(expected)
+		expected = deduplicateIDs(expected)
 		if !slices.Equal(planned.Prerequisites, expected) {
 			return fmt.Errorf("pkgstore: package %s has invalid prerequisites", planned.ID)
 		}
@@ -343,7 +369,7 @@ func validateBuildPlan(plan *BuildPlan) error {
 		}
 		seen[planned.ID] = struct{}{}
 	}
-	for _, root := range plan.Roots {
+	for _, root := range plan.roots {
 		if _, ok := seen[root]; !ok {
 			return fmt.Errorf("pkgstore: build plan root %s is missing", root)
 		}
@@ -351,119 +377,23 @@ func validateBuildPlan(plan *BuildPlan) error {
 	return nil
 }
 
-func validatePackageDefinition(packageID PackageID, definition PackageDefinition) error {
-	if err := validatePackageID(packageID); err != nil {
+func validateBuildPlanForStore(store *Store, plan *BuildPlan) error {
+	if err := validateBuildPlan(plan); err != nil {
 		return err
 	}
-	expectedID, err := packageIDForDefinition(definition)
-	if err != nil {
-		return fmt.Errorf("pkgstore: encode package %s: %w", packageID, err)
-	}
-	if packageID != expectedID {
+	if plan.storePath != store.path {
 		return fmt.Errorf(
-			"pkgstore: package ID %s does not match its definition (expected %s)",
-			packageID,
-			expectedID,
+			"pkgstore: build plan belongs to store %q, not %q",
+			plan.storePath,
+			store.path,
 		)
 	}
-	if err := validatePackageName(definition.Name); err != nil {
-		return fmt.Errorf(
-			"pkgstore: package %s has invalid name: %w",
-			packageID,
-			err,
-		)
-	}
-	if err := validateBuildEnvironment(definition.BuildEnv); err != nil {
-		return fmt.Errorf(
-			"pkgstore: package %s has invalid build environment: %w",
-			packageID,
-			err,
-		)
-	}
-	filenames := make(map[string]struct{}, len(definition.Fetch))
-	for _, source := range definition.Fetch {
-		if err := validateFetchFilename(source.Filename); err != nil {
-			return fmt.Errorf("pkgstore: package %s: %w", packageID, err)
-		}
-		if _, ok := filenames[source.Filename]; ok {
-			return fmt.Errorf(
-				"pkgstore: package %s has duplicate fetch filename %q",
-				packageID,
-				source.Filename,
-			)
-		}
-		filenames[source.Filename] = struct{}{}
-		if _, _, err := parseFetchSHA256(source.SHA256); err != nil {
-			return fmt.Errorf(
-				"pkgstore: package %s fetch %q: %w",
-				packageID,
-				source.Filename,
-				err,
-			)
-		}
-	}
-	for _, dependency := range append(
-		slices.Clone(definition.RunDeps),
-		definition.BuildDeps...,
-	) {
-		if err := validatePackageID(dependency); err != nil {
-			return fmt.Errorf("pkgstore: package %s dependency: %w", packageID, err)
-		}
-	}
 	return nil
 }
 
-func validatePackageName(name string) error {
-	if name == "" {
-		return nil
-	}
-	if len(name) > maximumPackageNameLength {
-		return fmt.Errorf("must not exceed %d bytes", maximumPackageNameLength)
-	}
-	for index, character := range name {
-		allowed := character >= 'a' && character <= 'z' ||
-			character >= 'A' && character <= 'Z' ||
-			character >= '0' && character <= '9' ||
-			index > 0 && strings.ContainsRune("._+-", character)
-		if !allowed {
-			return errors.New(
-				"must start with an ASCII letter or digit and contain only " +
-					"ASCII letters, digits, '.', '_', '+', or '-'",
-			)
-		}
-	}
-	return nil
-}
-
-func validatePackageID(packageID PackageID) error {
-	value := string(packageID)
-	if len(value) != packageIDLength {
-		return fmt.Errorf("pkgstore: invalid package ID %q", packageID)
-	}
-	decoded, err := packageIDEncoding.DecodeString(value)
-	if err != nil ||
-		len(decoded) != sha256.Size ||
-		packageIDEncoding.EncodeToString(decoded) != value {
-		return fmt.Errorf("pkgstore: invalid package ID %q", packageID)
-	}
-	return nil
-}
-
-func validateFetchFilename(filename string) error {
-	if filename == "" {
-		return errors.New("fetch filename is empty")
-	}
-	if filename == "." ||
-		filepath.Base(filename) != filename ||
-		strings.ContainsAny(filename, `/\`) {
-		return fmt.Errorf("fetch filename %q must be a single path component", filename)
-	}
-	return nil
-}
-
-func deduplicatePackageIDs(packageIDs []PackageID) []PackageID {
-	result := make([]PackageID, 0, len(packageIDs))
-	seen := make(map[PackageID]struct{}, len(packageIDs))
+func deduplicateIDs(packageIDs []pkggraph.ID) []pkggraph.ID {
+	result := make([]pkggraph.ID, 0, len(packageIDs))
+	seen := make(map[pkggraph.ID]struct{}, len(packageIDs))
 	for _, packageID := range packageIDs {
 		if _, ok := seen[packageID]; ok {
 			continue
@@ -474,13 +404,8 @@ func deduplicatePackageIDs(packageIDs []PackageID) []PackageID {
 	return result
 }
 
-func clonePackageDefinition(definition PackageDefinition) PackageDefinition {
-	definition.BuildEnv = resolveBuildEnvironment(definition.BuildEnv)
-	definition.RunDeps = slices.Clone(definition.RunDeps)
-	definition.BuildDeps = slices.Clone(definition.BuildDeps)
-	definition.Fetch = slices.Clone(definition.Fetch)
-	for index := range definition.Fetch {
-		definition.Fetch[index].URLs = slices.Clone(definition.Fetch[index].URLs)
-	}
-	return definition
+func clonePlannedPackage(planned PlannedPackage) PlannedPackage {
+	planned.Definition = pkggraph.CloneDefinition(planned.Definition)
+	planned.Prerequisites = slices.Clone(planned.Prerequisites)
+	return planned
 }

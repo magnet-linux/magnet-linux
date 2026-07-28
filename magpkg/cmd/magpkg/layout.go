@@ -2,8 +2,11 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
+
+	"github.com/andrewchambers/magnet-linux/magpkg/pkgstore"
 )
 
 func resolveStorePath(explicitStore string) (string, error) {
@@ -23,4 +26,18 @@ func resolveStorePath(explicitStore string) (string, error) {
 		return "", fmt.Errorf("resolve package store path: %w", err)
 	}
 	return absolute, nil
+}
+
+func resolveBinaryCacheURL(explicitCache string) string {
+	if explicitCache != "" {
+		return explicitCache
+	}
+	return os.Getenv(binaryCacheEnvironmentVariable)
+}
+
+func commandStoreOpenOptions(binaryCacheURL string) pkgstore.OpenOptions {
+	return pkgstore.OpenOptions{
+		BinaryCacheURL: binaryCacheURL,
+		HTTPClient:     http.DefaultClient,
+	}
 }

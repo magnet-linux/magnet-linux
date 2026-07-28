@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
 	"github.com/andrewchambers/magnet-linux/magpkg/pkgstore"
 	"golang.org/x/sys/unix"
 )
@@ -28,7 +29,7 @@ func TestCleanFetchesRemovesExpiredAndRetainsTouched(t *testing.T) {
 
 	// A cache hit refreshes the source's age without requiring its URLs.
 	retainedDigest := filepath.Base(retainedPath)
-	gotPath, err := store.Fetch(context.Background(), pkgstore.Fetch{
+	gotPath, err := store.Fetch(context.Background(), pkggraph.Fetch{
 		Filename: "retained",
 		SHA256:   retainedDigest,
 	})
@@ -185,7 +186,7 @@ func fetchTestSource(
 		t.Fatal(err)
 	}
 	sourceURL := (&url.URL{Scheme: "file", Path: sourcePath}).String()
-	path, err := store.Fetch(context.Background(), pkgstore.Fetch{
+	path, err := store.Fetch(context.Background(), pkggraph.Fetch{
 		Filename: filename,
 		SHA256:   sha256Hex(content),
 		URLs:     []string{sourceURL},

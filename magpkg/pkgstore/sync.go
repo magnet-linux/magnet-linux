@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"slices"
 	"syscall"
+
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
 )
 
 // SyncOptions controls synchronization of a runtime closure into a
@@ -24,26 +26,29 @@ type SyncOptions struct {
 	DeleteUnmanaged bool
 }
 
-// SyncResult describes the transient plan produced by Sync or Uninstall.
-type SyncResult struct {
-	Packages []PackageID
-	Changes  []SyncChange
-	DryRun   bool
+// DestinationResult describes the plan produced by Sync or Uninstall.
+type DestinationResult struct {
+	// Packages is the dependency-first runtime closure installed or removed.
+	Packages []pkggraph.ID
+	// Changes contains the planned destination mutations.
+	Changes []DestinationChange
+	DryRun  bool
 }
 
 // Sync makes the magpkg-managed portion of destination match roots' runtime
-// closure. Unmanaged directories are reused without being claimed. By
-// default, a collision with an unmanaged non-directory or modification to a
-// manifest-owned entry fails before filesystem changes begin. Force permits
-// replacement of those paths, while DeleteUnmanaged additionally removes
-// unrelated paths without following symlinks or crossing mount points.
+// closure. Every artifact in the closure must already exist in the store.
+// Unmanaged directories are reused without being claimed. By default, a
+// collision with an unmanaged non-directory or modification to a manifest-owned
+// entry fails before filesystem changes begin. Force permits replacement of
+// those paths, while DeleteUnmanaged additionally removes unrelated paths
+// without following symlinks or crossing mount points.
 func (store *Store) Sync(
 	ctx context.Context,
-	graph *PackageGraph,
-	roots []PackageID,
+	graph *pkggraph.Graph,
+	roots []pkggraph.ID,
 	destination string,
 	options SyncOptions,
-) (*SyncResult, error) {
+) (*DestinationResult, error) {
 	if err := validateStore(store); err != nil {
 		return nil, err
 	}
@@ -86,11 +91,12 @@ func (store *Store) Sync(
 		})
 	}
 
-	var result *SyncResult
+	var result *DestinationResult
 	err = withSyncDestinationLock(
 		ctx,
 		destination,
 		true,
+		options.DryRun,
 		func(absoluteDestination string) error {
 			plan, err := planSyncDestination(
 				ctx,
@@ -108,9 +114,9 @@ func (store *Store) Sync(
 			if err != nil {
 				return err
 			}
-			result = &SyncResult{
-				Packages: append([]PackageID(nil), closure...),
-				Changes:  append([]SyncChange(nil), plan.changes...),
+			result = &DestinationResult{
+				Packages: append([]pkggraph.ID(nil), closure...),
+				Changes:  append([]DestinationChange(nil), plan.changes...),
 				DryRun:   options.DryRun,
 			}
 			if options.DryRun {
@@ -150,7 +156,7 @@ func Uninstall(
 	ctx context.Context,
 	destination string,
 	options UninstallOptions,
-) (*SyncResult, error) {
+) (*DestinationResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -158,11 +164,12 @@ func Uninstall(
 		return nil, errors.New("pkgstore: uninstall destination is empty")
 	}
 
-	var result *SyncResult
+	var result *DestinationResult
 	err := withSyncDestinationLock(
 		ctx,
 		destination,
 		false,
+		options.DryRun,
 		func(absoluteDestination string) error {
 			plan, err := planSyncDestination(
 				ctx,
@@ -177,9 +184,10 @@ func Uninstall(
 			if err != nil {
 				return err
 			}
-			result = &SyncResult{
-				Changes: append([]SyncChange(nil), plan.changes...),
-				DryRun:  options.DryRun,
+			result = &DestinationResult{
+				Packages: syncManifestPackageIDs(plan.packages),
+				Changes:  append([]DestinationChange(nil), plan.changes...),
+				DryRun:   options.DryRun,
 			}
 			if options.DryRun {
 				return nil
@@ -206,6 +214,7 @@ func withSyncDestinationLock(
 	ctx context.Context,
 	destination string,
 	create bool,
+	dryRun bool,
 	use func(string) error,
 ) (retErr error) {
 	absolute, err := filepath.Abs(destination)
@@ -214,6 +223,8 @@ func withSyncDestinationLock(
 	}
 	info, err := os.Lstat(absolute)
 	switch {
+	case errors.Is(err, os.ErrNotExist) && create && dryRun:
+		return use(absolute)
 	case errors.Is(err, os.ErrNotExist) && create:
 		if err := os.MkdirAll(absolute, 0o755); err != nil {
 			return fmt.Errorf("create sync destination: %w", err)
@@ -229,6 +240,8 @@ func withSyncDestinationLock(
 	metadataPath := syncMetadataPath(absolute)
 	info, err = os.Lstat(metadataPath)
 	switch {
+	case errors.Is(err, os.ErrNotExist) && create && dryRun:
+		return use(absolute)
 	case errors.Is(err, os.ErrNotExist) && create:
 		if err := os.Mkdir(metadataPath, 0o700); err != nil {
 			return fmt.Errorf("create sync metadata directory: %w", err)
@@ -241,6 +254,18 @@ func withSyncDestinationLock(
 		return errors.New("destination .magpkg path is not a directory")
 	}
 
+	if dryRun {
+		info, err := os.Lstat(syncLockPath(absolute))
+		if errors.Is(err, os.ErrNotExist) {
+			return use(absolute)
+		}
+		if err != nil {
+			return fmt.Errorf("inspect sync destination lock: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			return errors.New("destination .magpkg lock is not a regular file")
+		}
+	}
 	lock, busy, err := tryLock(ctx, syncLockPath(absolute))
 	if err != nil {
 		return fmt.Errorf("lock sync destination: %w", err)
@@ -252,6 +277,14 @@ func withSyncDestinationLock(
 		retErr = errors.Join(retErr, lock.Close())
 	}()
 	return use(absolute)
+}
+
+func syncManifestPackageIDs(packages []syncManifestPackage) []pkggraph.ID {
+	ids := make([]pkggraph.ID, len(packages))
+	for index, pkg := range packages {
+		ids[index] = pkg.ID
+	}
+	return ids
 }
 
 func executeSyncPlan(ctx context.Context, plan *syncPlan) error {
@@ -446,7 +479,7 @@ func manifestAfterSync(
 	}
 	return syncManifest{
 		Version:  syncManifestVersion,
-		Roots:    append([]PackageID(nil), plan.roots...),
+		Roots:    append([]pkggraph.ID(nil), plan.roots...),
 		Packages: append([]syncManifestPackage(nil), plan.packages...),
 		Entries:  entries,
 	}, nil

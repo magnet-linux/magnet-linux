@@ -12,10 +12,11 @@ magpkg-sync - synchronize package runtime closures into a destination
 
 # DESCRIPTION
 
-*magpkg sync* builds the selected packages, composes their runtime closures,
-and makes the magpkg-managed portion of _PATH_ match the composed result. A
-_ROOT_ may be an exported Jsonnet field name or a package ID. When no roots are
-named, every exported root is selected.
+Unless *--no-build* is specified, *magpkg sync* first builds the selected
+packages. It then composes their runtime closures from artifacts already in the
+store and makes the magpkg-managed portion of _PATH_ match the composed result.
+A _ROOT_ may be an exported Jsonnet field name or a package ID. When no roots
+are named, every exported root is selected.
 
 Destination state is recorded in _PATH/.magpkg/manifest.json_. The manifest
 records package IDs and the type, mode, ownership, and content identity of
@@ -44,9 +45,24 @@ path. Fetch progress and package build output are written to standard error.
 *--store* _PATH_
 	Use _PATH_ as the package store.
 
+*--binary-cache* _URL_
+	Request missing package artifacts from _URL_ during the build phase.
+	Without this option, *MAGPKG_BINARY_CACHE* is used. This option has no
+	effect with *--no-build*.
+
+*--cache-only*
+	During the build phase, permit existing local artifacts and binary-cache
+	substitutions but prohibit source fetching and local package builds. It
+	cannot be combined with *--no-build*.
+
 *--dry-run*
-	Verify and print the destination plan without applying it. Required
-	packages are still fetched and built before destination planning.
+	Verify and print the destination plan without applying it or creating
+	the destination or its metadata. Required packages are still substituted,
+	fetched, or built before destination planning.
+
+*--no-build*
+	Do not invoke the build or binary-cache pipeline. Every artifact in the
+	selected runtime closure must already exist in the store.
 
 *--force*
 	Replace modified manifest-owned files and symlinks, remove modified owned
@@ -105,5 +121,6 @@ destination and rerun the command.
 
 # SEE ALSO
 
-*magpkg*(1), *magpkg-build*(1), *magpkg-uninstall*(1),
+*magpkg*(1), *magpkg-build*(1), *magpkg-export*(1),
+*magpkg-uninstall*(1), *magpkg-serve-cache*(1),
 *magpkg-package*(5), *magpkg-store*(5)

@@ -10,7 +10,7 @@ local build_policy = {
 {
   hello: build_policy + {
     name: 'hello',
-    build: |||
+    build: { kind: 'script', script: |||
       cat > hello.c <<'EOF'
       #include <stdio.h>
 
@@ -22,7 +22,7 @@ local build_policy = {
 
       mkdir -p /out/bin
       cc -static -Os -s -o /out/bin/hello hello.c
-    |||,
+    ||| },
     runDeps: [root_layout],
     buildDeps: [bootstrap],
     fetch: [],

@@ -7,7 +7,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
 )
+
+const buildParallelismEnvironmentVariable = "BUILD_PARALLELISM"
 
 func runBuildSandbox(
 	ctx context.Context,
@@ -17,7 +21,7 @@ func runBuildSandbox(
 	fetchDirectory string,
 	script string,
 	buildEnvironment map[string]string,
-	options normalizedBuildOptions,
+	options normalizedExecuteOptions,
 ) error {
 	bubblewrap, err := exec.LookPath("bwrap")
 	if err != nil {
@@ -45,7 +49,7 @@ func runBuildSandbox(
 		"--ro-bind", fetchDirectory, "/fetch",
 		"--clearenv",
 	}
-	buildEnvironment = resolveBuildEnvironment(buildEnvironment)
+	buildEnvironment = pkggraph.ResolveBuildEnvironment(buildEnvironment)
 	names := make([]string, 0, len(buildEnvironment))
 	for name := range buildEnvironment {
 		names = append(names, name)

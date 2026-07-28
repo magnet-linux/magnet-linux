@@ -14,22 +14,25 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
 )
 
 func TestPlanBuildIncludesBuildDependenciesOnlyWhenNeeded(t *testing.T) {
 	store := openTestStore(t)
 
-	runtimeDefinition := PackageDefinition{Name: "runtime"}
-	runtimeID := testPackageID(t, runtimeDefinition)
-	buildDefinition := PackageDefinition{Name: "build-tool"}
-	buildID := testPackageID(t, buildDefinition)
-	rootDefinition := PackageDefinition{
+	runtimeDefinition := pkggraph.Definition{Name: "runtime", Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone}}
+	runtimeID := testID(t, runtimeDefinition)
+	buildDefinition := pkggraph.Definition{Name: "build-tool", Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone}}
+	buildID := testID(t, buildDefinition)
+	rootDefinition := pkggraph.Definition{
 		Name:      "root",
-		RunDeps:   []PackageID{runtimeID},
-		BuildDeps: []PackageID{buildID},
+		Build:     pkggraph.BuildSpec{Kind: pkggraph.BuildNone},
+		RunDeps:   []pkggraph.ID{runtimeID},
+		BuildDeps: []pkggraph.ID{buildID},
 	}
-	rootID := testPackageID(t, rootDefinition)
-	graph := &PackageGraph{Nodes: map[PackageID]PackageDefinition{
+	rootID := testID(t, rootDefinition)
+	graph := &pkggraph.Graph{Nodes: map[pkggraph.ID]pkggraph.Definition{
 		runtimeID: runtimeDefinition,
 		buildID:   buildDefinition,
 		rootID:    rootDefinition,
@@ -39,12 +42,12 @@ func TestPlanBuildIncludesBuildDependenciesOnlyWhenNeeded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := plannedIDs(plan), []PackageID{runtimeID, buildID, rootID}; !slices.Equal(got, want) {
+	if got, want := plannedIDs(plan), []pkggraph.ID{runtimeID, buildID, rootID}; !slices.Equal(got, want) {
 		t.Fatalf("planned package order = %v, want %v", got, want)
 	}
-	for _, planned := range plan.Packages {
-		if planned.Disposition != BuildDispositionLocal {
-			t.Fatalf("package %s disposition = %q, want %q", planned.ID, planned.Disposition, BuildDispositionLocal)
+	for _, planned := range plan.packages {
+		if planned.Disposition != BuildDispositionNeedsBuild {
+			t.Fatalf("package %s disposition = %q, want %q", planned.ID, planned.Disposition, BuildDispositionNeedsBuild)
 		}
 	}
 
@@ -53,19 +56,19 @@ func TestPlanBuildIncludesBuildDependenciesOnlyWhenNeeded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := plannedIDs(plan), []PackageID{runtimeID, rootID}; !slices.Equal(got, want) {
+	if got, want := plannedIDs(plan), []pkggraph.ID{runtimeID, rootID}; !slices.Equal(got, want) {
 		t.Fatalf("available-root package order = %v, want %v", got, want)
 	}
-	if plan.Packages[len(plan.Packages)-1].Disposition != BuildDispositionAvailable {
-		t.Fatalf("root disposition = %q, want %q", plan.Packages[len(plan.Packages)-1].Disposition, BuildDispositionAvailable)
+	if plan.packages[len(plan.packages)-1].Disposition != BuildDispositionAvailable {
+		t.Fatalf("root disposition = %q, want %q", plan.packages[len(plan.packages)-1].Disposition, BuildDispositionAvailable)
 	}
 }
 
 func TestPlanBuildRejectsDefinitionWithWrongID(t *testing.T) {
 	store := openTestStore(t)
-	definition := PackageDefinition{Name: "package"}
-	wrongID := PackageID(strings.Repeat("a", packageIDLength))
-	graph := &PackageGraph{Nodes: map[PackageID]PackageDefinition{
+	definition := pkggraph.Definition{Name: "package", Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone}}
+	wrongID := pkggraph.ID(strings.Repeat("a", pkggraph.IDLength))
+	graph := &pkggraph.Graph{Nodes: map[pkggraph.ID]pkggraph.Definition{
 		wrongID: definition,
 	}}
 	_, err := store.PlanBuild(context.Background(), graph, wrongID)
@@ -74,24 +77,54 @@ func TestPlanBuildRejectsDefinitionWithWrongID(t *testing.T) {
 	}
 }
 
-func TestPackageIDUsesLowercaseUnpaddedBase32(t *testing.T) {
-	packageID := packageIDFromCanonical([]byte("canonical package definition"))
-	const want PackageID = "al6yavugrwtiaphzx4bjvb4fns4fwmsevxdzonrd6btbdozfelea"
-	if packageID != want {
-		t.Fatalf("package ID = %q, want %q", packageID, want)
+func TestBuildPlanInspectionDoesNotMutatePlan(t *testing.T) {
+	store := openTestStore(t)
+	definition := pkggraph.Definition{
+		Name:  "package",
+		Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone},
 	}
-	if err := validatePackageID(packageID); err != nil {
-		t.Fatalf("validate generated package ID: %v", err)
+	packageID := testID(t, definition)
+	graph := &pkggraph.Graph{
+		Nodes: map[pkggraph.ID]pkggraph.Definition{packageID: definition},
 	}
+	plan, err := store.PlanBuild(context.Background(), graph, packageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := plan.Roots()
+	packages := plan.Packages()
+	roots[0] = ""
+	packages[0].Definition.Name = "modified"
+	if got := plan.Roots()[0]; got != packageID {
+		t.Fatalf("plan root = %s, want %s", got, packageID)
+	}
+	if got := plan.Packages()[0].Definition.Name; got != definition.Name {
+		t.Fatalf("plan definition name = %q, want %q", got, definition.Name)
+	}
+}
 
-	for _, invalid := range []PackageID{
-		PackageID(strings.ToUpper(string(packageID))),
-		PackageID(string(packageID[:packageIDLength-1]) + "1"),
-		packageID + "=",
-	} {
-		if err := validatePackageID(invalid); err == nil {
-			t.Fatalf("accepted invalid package ID %q", invalid)
-		}
+func TestBuildPlanIsBoundToItsStore(t *testing.T) {
+	firstStore := openTestStore(t)
+	secondStore := openTestStore(t)
+	definition := pkggraph.Definition{
+		Name:  "package",
+		Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone},
+	}
+	packageID := testID(t, definition)
+	graph := &pkggraph.Graph{
+		Nodes: map[pkggraph.ID]pkggraph.Definition{packageID: definition},
+	}
+	plan, err := firstStore.PlanBuild(context.Background(), graph, packageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = secondStore.ExecuteBuildPlan(
+		context.Background(),
+		plan,
+		ExecuteOptions{},
+	)
+	if err == nil || !strings.Contains(err.Error(), "build plan belongs to store") {
+		t.Fatalf("ExecuteBuildPlan() error = %v, want store mismatch", err)
 	}
 }
 
@@ -125,30 +158,31 @@ func TestFetchBuildInputsRunsFetchesInParallel(t *testing.T) {
 			))
 			defer server.Close()
 
-			definition := PackageDefinition{Name: "parallel-fetches"}
+			definition := pkggraph.Definition{Name: "parallel-fetches", Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone}}
 			for index := range 6 {
 				filename := "source-" + strconv.Itoa(index)
 				path := "/" + filename
 				content := []byte("contents for " + filename)
 				contents[path] = content
 				digest := sha256.Sum256(content)
-				definition.Fetch = append(definition.Fetch, Fetch{
+				definition.Fetch = append(definition.Fetch, pkggraph.Fetch{
 					Filename: filename,
 					SHA256:   hex.EncodeToString(digest[:]),
 					URLs:     []string{server.URL + path},
 				})
 			}
-			packageID := testPackageID(t, definition)
+			packageID := testID(t, definition)
 			plan := &BuildPlan{
-				Roots: []PackageID{packageID},
-				Packages: []PlannedPackage{{
+				roots: []pkggraph.ID{packageID},
+				packages: []PlannedPackage{{
 					ID:          packageID,
 					Definition:  definition,
-					Disposition: BuildDispositionLocal,
+					Disposition: BuildDispositionNeedsBuild,
 				}},
 			}
 
 			store := openTestStore(t)
+			plan.storePath = store.path
 			if err := store.FetchBuildInputsWithOptions(
 				context.Background(),
 				plan,
@@ -169,16 +203,17 @@ func TestFetchBuildInputsRunsFetchesInParallel(t *testing.T) {
 
 func TestFetchBuildInputsRejectsNegativeJobs(t *testing.T) {
 	store := openTestStore(t)
-	definition := PackageDefinition{Name: "negative-fetch-jobs"}
-	packageID := testPackageID(t, definition)
+	definition := pkggraph.Definition{Name: "negative-fetch-jobs", Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone}}
+	packageID := testID(t, definition)
 	err := store.FetchBuildInputsWithOptions(
 		context.Background(),
 		&BuildPlan{
-			Roots: []PackageID{packageID},
-			Packages: []PlannedPackage{{
+			storePath: store.path,
+			roots:     []pkggraph.ID{packageID},
+			packages: []PlannedPackage{{
 				ID:          packageID,
 				Definition:  definition,
-				Disposition: BuildDispositionLocal,
+				Disposition: BuildDispositionNeedsBuild,
 			}},
 		},
 		FetchInputsOptions{Jobs: -1},
@@ -188,6 +223,49 @@ func TestFetchBuildInputsRejectsNegativeJobs(t *testing.T) {
 	}
 	if got, want := err.Error(), "pkgstore: fetch jobs must not be negative"; got != want {
 		t.Fatalf("error = %q, want %q", got, want)
+	}
+}
+
+func TestBuildPackagesValidatesOptionsBeforeFetching(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		_ *http.Request,
+	) {
+		requests.Add(1)
+		_, _ = writer.Write([]byte("source"))
+	}))
+	defer server.Close()
+
+	digest := sha256.Sum256([]byte("source"))
+	definition := pkggraph.Definition{
+		Name:  "invalid-options",
+		Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone},
+		Fetch: []pkggraph.Fetch{{
+			Filename: "source",
+			SHA256:   hex.EncodeToString(digest[:]),
+			URLs:     []string{server.URL},
+		}},
+	}
+	packageID := testID(t, definition)
+	graph := &pkggraph.Graph{
+		Nodes: map[pkggraph.ID]pkggraph.Definition{
+			packageID: definition,
+		},
+		Roots: map[string]pkggraph.ID{"package": packageID},
+	}
+	store := openTestStore(t)
+	_, err := store.BuildPackagesWithOptions(
+		context.Background(),
+		graph,
+		[]pkggraph.ID{packageID},
+		BuildOptions{Jobs: -1},
+	)
+	if err == nil || !strings.Contains(err.Error(), "build jobs must not be negative") {
+		t.Fatalf("BuildPackagesWithOptions() error = %v", err)
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("source requests = %d, want 0", got)
 	}
 }
 
@@ -204,18 +282,18 @@ func openTestStore(t *testing.T) *Store {
 	return store
 }
 
-func testPackageID(t *testing.T, definition PackageDefinition) PackageID {
+func testID(t *testing.T, definition pkggraph.Definition) pkggraph.ID {
 	t.Helper()
-	packageID, err := packageIDForDefinition(definition)
+	packageID, err := pkggraph.IDForDefinition(definition)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return packageID
 }
 
-func plannedIDs(plan *BuildPlan) []PackageID {
-	result := make([]PackageID, len(plan.Packages))
-	for index, planned := range plan.Packages {
+func plannedIDs(plan *BuildPlan) []pkggraph.ID {
+	result := make([]pkggraph.ID, len(plan.packages))
+	for index, planned := range plan.packages {
 		result[index] = planned.ID
 	}
 	return result
@@ -224,7 +302,7 @@ func plannedIDs(plan *BuildPlan) []PackageID {
 func writeTestArtifact(
 	t *testing.T,
 	store *Store,
-	packageID PackageID,
+	packageID pkggraph.ID,
 	packageName string,
 ) {
 	t.Helper()
@@ -235,7 +313,7 @@ func writeTestArtifact(
 
 func publishTestArtifact(
 	store *Store,
-	packageID PackageID,
+	packageID pkggraph.ID,
 	packageName string,
 ) error {
 	artifactPath := store.packageArtifactPath(packageID, packageName)

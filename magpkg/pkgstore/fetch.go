@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
 )
 
 const (
@@ -35,7 +37,9 @@ const (
 // FetchProgress is a point-in-time update for one source. TotalBytes is -1
 // when the source size is unknown.
 type FetchProgress struct {
-	Filename       string
+	Filename string
+	// SHA256 is the normalized lowercase digest identifying the fetch.
+	SHA256         string
 	URL            string
 	Phase          FetchProgressPhase
 	CompletedBytes int64
@@ -43,12 +47,13 @@ type FetchProgress struct {
 	Err            error
 }
 
-// FetchProgressFunc receives fetch progress updates. Callbacks should return
-// quickly and may be called concurrently by future batch fetchers.
+// FetchProgressFunc receives fetch progress updates. Callbacks must be safe for
+// concurrent use and should return quickly.
 type FetchProgressFunc func(FetchProgress)
 
 // FetchOptions controls a single source fetch.
 type FetchOptions struct {
+	// Progress receives source-fetch progress updates.
 	Progress FetchProgressFunc
 }
 
@@ -57,14 +62,14 @@ type FetchOptions struct {
 //
 // The URLs are attempted in order. Fetch currently supports file, http, and
 // https URLs. The SHA-256 digest is always verified before a file is returned.
-func (s *Store) Fetch(ctx context.Context, fetch Fetch) (path string, retErr error) {
+func (s *Store) Fetch(ctx context.Context, fetch pkggraph.Fetch) (path string, retErr error) {
 	return s.FetchWithOptions(ctx, fetch, FetchOptions{})
 }
 
 // FetchWithOptions is Fetch with progress reporting.
 func (s *Store) FetchWithOptions(
 	ctx context.Context,
-	fetch Fetch,
+	fetch pkggraph.Fetch,
 	options FetchOptions,
 ) (path string, retErr error) {
 	if err := ctx.Err(); err != nil {
@@ -118,6 +123,7 @@ func (s *Store) FetchWithOptions(
 		}
 		reportFetchProgress(options.Progress, FetchProgress{
 			Filename:       fetch.Filename,
+			SHA256:         digest,
 			Phase:          FetchProgressCached,
 			CompletedBytes: verifiedBytes,
 			TotalBytes:     verifiedBytes,
@@ -149,6 +155,7 @@ func (s *Store) FetchWithOptions(
 			destination,
 			expectedSHA256,
 			fetch.Filename,
+			digest,
 			options.Progress,
 		)
 		if err == nil {
@@ -162,6 +169,7 @@ func (s *Store) FetchWithOptions(
 			}
 			reportFetchProgress(options.Progress, FetchProgress{
 				Filename:       fetch.Filename,
+				SHA256:         digest,
 				URL:            redactedFetchURL(rawURL),
 				Phase:          FetchProgressComplete,
 				CompletedBytes: size,
@@ -174,6 +182,7 @@ func (s *Store) FetchWithOptions(
 		}
 		reportFetchProgress(options.Progress, FetchProgress{
 			Filename:   fetch.Filename,
+			SHA256:     digest,
 			URL:        redactedFetchURL(rawURL),
 			Phase:      FetchProgressURLFailed,
 			TotalBytes: -1,
@@ -208,6 +217,7 @@ func (s *Store) fetchURL(
 	destination string,
 	expectedSHA256 [sha256.Size]byte,
 	filename string,
+	digest string,
 	progress FetchProgressFunc,
 ) (retErr error) {
 	parsed, err := url.Parse(rawURL)
@@ -249,6 +259,7 @@ func (s *Store) fetchURL(
 	reportTransfer := func(completed int64, total int64) {
 		reportFetchProgress(progress, FetchProgress{
 			Filename:       filename,
+			SHA256:         digest,
 			URL:            parsed.Redacted(),
 			Phase:          FetchProgressDownloading,
 			CompletedBytes: completed,
@@ -259,7 +270,7 @@ func (s *Store) fetchURL(
 	case "file":
 		err = fetchFileURL(ctx, parsed, writer, reportTransfer)
 	case "http", "https":
-		err = fetchHTTPURL(ctx, parsed, writer, reportTransfer)
+		err = fetchHTTPURL(ctx, s.httpClient, parsed, writer, reportTransfer)
 	}
 	if err != nil {
 		return err
@@ -353,10 +364,14 @@ func fileURLPath(source *url.URL) (string, error) {
 
 func fetchHTTPURL(
 	ctx context.Context,
+	client *http.Client,
 	source *url.URL,
 	destination io.Writer,
 	progress func(int64, int64),
 ) error {
+	if client == nil {
+		return errors.New("HTTP client is not configured")
+	}
 	if source.Host == "" {
 		return errors.New("HTTP URL has no host")
 	}
@@ -366,7 +381,7 @@ func fetchHTTPURL(
 	}
 	// Fetch and verify the bytes as served, without transparent compression.
 	request.Header.Set("Accept-Encoding", "identity")
-	response, err := http.DefaultClient.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		return fmt.Errorf("download: %w", err)
 	}

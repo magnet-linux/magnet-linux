@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
 )
 
 type packageReference struct {
-	id   PackageID
+	id   pkggraph.ID
 	name string
 }
 
@@ -16,8 +18,8 @@ type packageReference struct {
 // extracted.
 func (s *Store) ExtractPackages(
 	ctx context.Context,
-	graph *PackageGraph,
-	packageIDs []PackageID,
+	graph *pkggraph.Graph,
+	packageIDs []pkggraph.ID,
 	destination string,
 ) error {
 	if err := validateStore(s); err != nil {
@@ -28,6 +30,9 @@ func (s *Store) ExtractPackages(
 	}
 	if graph == nil {
 		return errors.New("pkgstore: package graph is nil")
+	}
+	if err := graph.Validate(); err != nil {
+		return err
 	}
 	if destination == "" {
 		return errors.New("pkgstore: package extraction destination is empty")
@@ -42,7 +47,10 @@ func (s *Store) ExtractPackages(
 				packageID,
 			)
 		}
-		if err := validatePackageDefinition(packageID, definition); err != nil {
+		if err := pkggraph.ValidateIdentity(
+			packageID,
+			definition,
+		); err != nil {
 			return err
 		}
 		references = append(references, packageReference{
@@ -56,10 +64,10 @@ func (s *Store) ExtractPackages(
 // ExtractRuntimeClosure calculates and extracts roots' runtime closure.
 func (s *Store) ExtractRuntimeClosure(
 	ctx context.Context,
-	graph *PackageGraph,
-	roots []PackageID,
+	graph *pkggraph.Graph,
+	roots []pkggraph.ID,
 	destination string,
-) ([]PackageID, error) {
+) ([]pkggraph.ID, error) {
 	closure, err := graph.RuntimeClosure(roots...)
 	if err != nil {
 		return nil, err

@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
 )
 
 // CleanKind identifies the kind of store entry removed by cleanup.
@@ -25,6 +27,7 @@ const (
 // CleanEvent describes one useful store entry removed by cleanup.
 type CleanEvent struct {
 	Kind CleanKind
+	// Path is the absolute path removed from the store.
 	Path string
 }
 
@@ -168,8 +171,8 @@ func (s *Store) CleanPackagesWithOptions(
 	packageRoot := filepath.Join(s.path, packageDirectoryName)
 	lockRoot := filepath.Join(s.path, buildLockDirectory)
 	workRoot := filepath.Join(s.path, buildWorkDirectory)
-	artifacts := make(map[PackageID][]string)
-	packageIDs := make(map[PackageID]struct{})
+	artifacts := make(map[pkggraph.ID][]string)
+	packageIDs := make(map[pkggraph.ID]struct{})
 
 	entries, err := readDirectoryEntries(packageRoot)
 	if err != nil {
@@ -200,8 +203,8 @@ func (s *Store) CleanPackagesWithOptions(
 		return fmt.Errorf("read package workspaces: %w", err)
 	}
 	for _, entry := range entries {
-		packageID := PackageID(entry.Name())
-		if validatePackageID(packageID) == nil {
+		packageID := pkggraph.ID(entry.Name())
+		if pkggraph.ValidateID(packageID) == nil {
 			packageIDs[packageID] = struct{}{}
 		}
 	}
@@ -213,7 +216,7 @@ func (s *Store) CleanPackagesWithOptions(
 		return fmt.Errorf("create package lock directory: %w", err)
 	}
 
-	orderedIDs := make([]PackageID, 0, len(packageIDs))
+	orderedIDs := make([]pkggraph.ID, 0, len(packageIDs))
 	for packageID := range packageIDs {
 		orderedIDs = append(orderedIDs, packageID)
 	}
@@ -296,37 +299,37 @@ func fetchCacheEntryDigest(name string) (string, bool) {
 	return digest, true
 }
 
-func packageArtifactEntryID(name string) (PackageID, bool) {
+func packageArtifactEntryID(name string) (pkggraph.ID, bool) {
 	if !strings.HasSuffix(name, packageArtifactSuffix) {
 		return "", false
 	}
 	base := strings.TrimSuffix(name, packageArtifactSuffix)
-	if len(base) < packageIDLength {
+	if len(base) < pkggraph.IDLength {
 		return "", false
 	}
-	packageID := PackageID(base[len(base)-packageIDLength:])
-	if validatePackageID(packageID) != nil {
+	packageID := pkggraph.ID(base[len(base)-pkggraph.IDLength:])
+	if pkggraph.ValidateID(packageID) != nil {
 		return "", false
 	}
 	namePrefix := strings.TrimSuffix(
-		base[:len(base)-packageIDLength],
+		base[:len(base)-pkggraph.IDLength],
 		"-",
 	)
 	if packageArtifactFilename(packageID, namePrefix) != name {
 		return "", false
 	}
-	if err := validatePackageName(namePrefix); err != nil {
+	if err := pkggraph.ValidateName(namePrefix); err != nil {
 		return "", false
 	}
 	return packageID, true
 }
 
-func packageLockEntryID(name string) (PackageID, bool) {
+func packageLockEntryID(name string) (pkggraph.ID, bool) {
 	if !strings.HasSuffix(name, buildLockSuffix) {
 		return "", false
 	}
-	packageID := PackageID(strings.TrimSuffix(name, buildLockSuffix))
-	return packageID, validatePackageID(packageID) == nil
+	packageID := pkggraph.ID(strings.TrimSuffix(name, buildLockSuffix))
+	return packageID, pkggraph.ValidateID(packageID) == nil
 }
 
 func readDirectoryEntries(path string) ([]os.DirEntry, error) {

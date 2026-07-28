@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/ulikunitz/xz"
 )
 
 var normalizedArchiveTime = time.Unix(0, 0).UTC()
@@ -42,31 +43,97 @@ func createPackageArchive(
 		}
 	}()
 
-	encoder, err := zstd.NewWriter(
+	if err := writeArchive(
+		ctx,
+		sourceRoot,
 		output,
-		zstd.WithEncoderConcurrency(1),
-		zstd.WithEncoderLevel(zstd.SpeedDefault),
-	)
-	if err != nil {
-		return fmt.Errorf("create zstd encoder: %w", err)
+		ExportFormatTarZstd,
+	); err != nil {
+		return err
 	}
-	encoderOpen := true
+	if err := output.Sync(); err != nil {
+		return fmt.Errorf("sync package archive: %w", err)
+	}
+	if err := output.Close(); err != nil {
+		return fmt.Errorf("close package archive: %w", err)
+	}
+	outputOpen = false
+	return nil
+}
+
+func writeArchive(
+	ctx context.Context,
+	sourceRoot string,
+	output io.Writer,
+	format ExportFormat,
+) (retErr error) {
+	if err := validateExportFormat(format); err != nil {
+		return err
+	}
+	if output == nil {
+		return errors.New("archive output is nil")
+	}
+
+	archiveOutput := output
+	var encoder io.WriteCloser
+	var encoderName string
+	switch format {
+	case ExportFormatTar:
+	case ExportFormatTarGzip:
+		gzipEncoder := gzip.NewWriter(output)
+		gzipEncoder.Header.ModTime = normalizedArchiveTime
+		gzipEncoder.Header.OS = 255
+		encoder = gzipEncoder
+		encoderName = "gzip"
+		archiveOutput = encoder
+	case ExportFormatTarXZ:
+		xzEncoder, err := xz.NewWriter(output)
+		if err != nil {
+			return fmt.Errorf("create xz encoder: %w", err)
+		}
+		encoder = xzEncoder
+		encoderName = "xz"
+		archiveOutput = encoder
+	case ExportFormatTarZstd:
+		zstdEncoder, err := zstd.NewWriter(
+			output,
+			zstd.WithEncoderConcurrency(1),
+			zstd.WithEncoderLevel(zstd.SpeedDefault),
+		)
+		if err != nil {
+			return fmt.Errorf("create zstd encoder: %w", err)
+		}
+		encoder = zstdEncoder
+		encoderName = "zstd"
+		archiveOutput = encoder
+	}
+	encoderOpen := encoder != nil
 	defer func() {
 		if encoderOpen {
-			retErr = errors.Join(retErr, encoder.Close())
+			if err := encoder.Close(); err != nil {
+				retErr = errors.Join(
+					retErr,
+					fmt.Errorf("finish %s archive: %w", encoderName, err),
+				)
+			}
 		}
 	}()
 
-	tarWriter := tar.NewWriter(encoder)
+	tarWriter := tar.NewWriter(archiveOutput)
 	tarOpen := true
 	defer func() {
 		if tarOpen {
-			retErr = errors.Join(retErr, tarWriter.Close())
+			if err := tarWriter.Close(); err != nil {
+				retErr = errors.Join(
+					retErr,
+					fmt.Errorf("finish tar archive: %w", err),
+				)
+			}
 		}
 	}()
 
 	var paths []string
-	err = filepath.WalkDir(sourceRoot, func(current string, entry fs.DirEntry, walkErr error) error {
+	err := filepath.WalkDir(sourceRoot, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -134,21 +201,107 @@ func createPackageArchive(
 	}
 
 	if err := tarWriter.Close(); err != nil {
-		return fmt.Errorf("finish package tar archive: %w", err)
+		return fmt.Errorf("finish tar archive: %w", err)
 	}
 	tarOpen = false
-	if err := encoder.Close(); err != nil {
-		return fmt.Errorf("finish package zstd archive: %w", err)
+	if encoder != nil {
+		if err := encoder.Close(); err != nil {
+			return fmt.Errorf("finish %s archive: %w", encoderName, err)
+		}
+		encoderOpen = false
 	}
-	encoderOpen = false
-	if err := output.Sync(); err != nil {
-		return fmt.Errorf("sync package archive: %w", err)
-	}
-	if err := output.Close(); err != nil {
-		return fmt.Errorf("close package archive: %w", err)
-	}
-	outputOpen = false
 	return nil
+}
+
+// validatePackageArchive completely decodes a package archive and checks the
+// same path and entry-type boundary enforced during extraction. Binary caches
+// are trusted for artifact contents, but malformed or truncated artifacts are
+// never published into the local store.
+func validatePackageArchive(ctx context.Context, archivePath string) error {
+	file, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	buffered := bufio.NewReader(file)
+	magic, _ := buffered.Peek(4)
+	if len(magic) < 4 ||
+		magic[0] != 0x28 || magic[1] != 0xb5 ||
+		magic[2] != 0x2f || magic[3] != 0xfd {
+		return errors.New("package artifact is not a zstd archive")
+	}
+	decoder, err := zstd.NewReader(buffered)
+	if err != nil {
+		return fmt.Errorf("open package zstd archive: %w", err)
+	}
+	defer decoder.Close()
+
+	reader := tar.NewReader(decoder)
+	paths := make(map[string]struct{})
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read package archive: %w", err)
+		}
+		relative, skip, err := cleanArchiveMember(header.Name)
+		if err != nil {
+			return fmt.Errorf("invalid package archive path %q: %w", header.Name, err)
+		}
+		if skip {
+			continue
+		}
+		if _, exists := paths[relative]; exists {
+			return fmt.Errorf("duplicate package archive path %q", header.Name)
+		}
+		paths[relative] = struct{}{}
+
+		switch header.Typeflag {
+		case tar.TypeDir, tar.TypeSymlink:
+		case tar.TypeReg, tar.TypeRegA:
+			written, err := copyContext(
+				ctx,
+				io.Discard,
+				io.LimitReader(reader, header.Size),
+			)
+			if err != nil {
+				return fmt.Errorf(
+					"read package archive entry %q: %w",
+					header.Name,
+					err,
+				)
+			}
+			if written != header.Size {
+				return fmt.Errorf(
+					"package archive entry %q is truncated",
+					header.Name,
+				)
+			}
+		case tar.TypeLink:
+			if _, skip, err := cleanArchiveMember(header.Linkname); err != nil || skip {
+				if err == nil {
+					err = errors.New("hard link target is the archive root")
+				}
+				return fmt.Errorf(
+					"invalid package archive hard link %q: %w",
+					header.Linkname,
+					err,
+				)
+			}
+		case tar.TypeXGlobalHeader, tar.TypeXHeader:
+		default:
+			return fmt.Errorf(
+				"unsupported package archive entry type %d",
+				header.Typeflag,
+			)
+		}
+	}
 }
 
 func extractArchive(ctx context.Context, archivePath string, destination string) error {
@@ -159,7 +312,7 @@ func extractArchive(ctx context.Context, archivePath string, destination string)
 	defer file.Close()
 
 	buffered := bufio.NewReader(file)
-	magic, _ := buffered.Peek(4)
+	magic, _ := buffered.Peek(6)
 	var reader io.Reader = buffered
 	var closeReader func()
 	switch {
@@ -183,6 +336,15 @@ func extractArchive(ctx context.Context, archivePath string, destination string)
 		}
 	case len(magic) >= 3 && string(magic[:3]) == "BZh":
 		reader = bzip2.NewReader(buffered)
+	case len(magic) >= 6 &&
+		magic[0] == 0xfd && magic[1] == 0x37 &&
+		magic[2] == 0x7a && magic[3] == 0x58 &&
+		magic[4] == 0x5a && magic[5] == 0x00:
+		decoder, err := xz.NewReader(buffered)
+		if err != nil {
+			return fmt.Errorf("open xz archive: %w", err)
+		}
+		reader = decoder
 	}
 	if closeReader != nil {
 		defer closeReader()

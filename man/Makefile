@@ -4,7 +4,9 @@ SOURCES := \
 	magpkg.1.scd \
 	magpkg-build.1.scd \
 	magpkg-clean.1.scd \
+	magpkg-export.1.scd \
 	magpkg-init.1.scd \
+	magpkg-serve-cache.1.scd \
 	magpkg-sync.1.scd \
 	magpkg-uninstall.1.scd \
 	magpkg-package.5.scd \

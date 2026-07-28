@@ -1,109 +1,57 @@
-package pkgstore
+package jsonnet
 
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base32"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 
-	jsonnet "github.com/andrewchambers/go-jsonnet"
+	gojsonnet "github.com/andrewchambers/go-jsonnet"
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
 )
 
-const (
-	packageIDAlphabet = "abcdefghijklmnopqrstuvwxyz234567"
-	packageIDLength   = 52
-)
-
-var packageIDEncoding = base32.NewEncoding(packageIDAlphabet).
-	WithPadding(base32.NoPadding)
-
-// PackageID is the lowercase, unpadded Base32 encoding of the SHA-256
-// identity of a versioned, canonical package definition.
-type PackageID string
-
-// PackageDefinition describes a package in a materialized package graph.
-type PackageDefinition struct {
-	Name  string `json:"name"`
-	Build string `json:"build"`
-	// BuildEnv overrides the deterministic default environment used by build
-	// scripts. Jsonnet materialization stores the fully resolved environment.
-	BuildEnv  map[string]string `json:"buildEnv"`
-	RunDeps   []PackageID       `json:"runDeps"`
-	BuildDeps []PackageID       `json:"buildDeps"`
-	Fetch     []Fetch           `json:"fetch"`
-}
-
-// Fetch describes a file required while building a package.
-type Fetch struct {
-	Filename string   `json:"filename"`
-	SHA256   string   `json:"sha256"`
-	URLs     []string `json:"urls"`
-}
-
-// PackageGraph is a directed graph of package definitions. Roots maps the
-// fields exported by the Jsonnet program to their package IDs.
-type PackageGraph struct {
-	Nodes map[PackageID]PackageDefinition `json:"nodes"`
-	Roots map[string]PackageID            `json:"roots"`
-}
-
-// JsonnetOptions controls evaluation of a Jsonnet package graph.
-type JsonnetOptions struct {
+// Options controls evaluation of a Jsonnet package graph.
+type Options struct {
 	// ExtVars binds string values available through std.extVar.
 	ExtVars map[string]string
 }
 
-// PackageGraphFromJsonnet evaluates jsonnetFile and normalizes its package
-// definitions into a graph without manifesting the Jsonnet value to JSON.
-func PackageGraphFromJsonnet(
+// EvaluateFile evaluates filename and materializes its package graph without
+// manifesting the Jsonnet value to JSON.
+func EvaluateFile(
 	ctx context.Context,
-	jsonnetFile string,
-) (*PackageGraph, error) {
-	return PackageGraphFromJsonnetWithOptions(
-		ctx,
-		jsonnetFile,
-		JsonnetOptions{},
-	)
-}
-
-// PackageGraphFromJsonnetWithOptions evaluates jsonnetFile with options and
-// normalizes its package definitions into a graph without manifesting the
-// Jsonnet value to JSON.
-func PackageGraphFromJsonnetWithOptions(
-	ctx context.Context,
-	jsonnetFile string,
-	options JsonnetOptions,
-) (*PackageGraph, error) {
+	filename string,
+	options Options,
+) (*pkggraph.Graph, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if jsonnetFile == "" {
-		return nil, errors.New("pkgstore: Jsonnet filename is empty")
+	if filename == "" {
+		return nil, errors.New("pkggraph: Jsonnet filename is empty")
 	}
 
-	vm := jsonnet.MakeVM()
+	vm := gojsonnet.MakeVM()
 	for name, value := range options.ExtVars {
 		if name == "" {
-			return nil, errors.New("pkgstore: Jsonnet external variable name is empty")
+			return nil, errors.New("pkggraph: Jsonnet external variable name is empty")
 		}
 		vm.ExtVar(name, value)
 	}
-	value, err := vm.EvaluateFileValue(jsonnetFile)
+	value, err := vm.EvaluateFileValue(filename)
 	if err != nil {
-		return nil, fmt.Errorf("evaluate Jsonnet file %q: %w", jsonnetFile, err)
+		return nil, fmt.Errorf("evaluate Jsonnet file %q: %w", filename, err)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	root, ok := value.(jsonnet.ObjectValue)
+	root, ok := value.(gojsonnet.ObjectValue)
 	if !ok {
 		return nil, fmt.Errorf(
 			"Jsonnet file %q: expected top-level object, got %s",
-			jsonnetFile,
+			filename,
 			jsonnetValueType(value),
 		)
 	}
@@ -112,9 +60,9 @@ func PackageGraphFromJsonnetWithOptions(
 
 	rootNames, err := root.Fields()
 	if err != nil {
-		return nil, fmt.Errorf("read roots from %q: %w", jsonnetFile, err)
+		return nil, fmt.Errorf("read roots from %q: %w", filename, err)
 	}
-	roots := make(map[string]PackageID, len(rootNames))
+	roots := make(map[string]pkggraph.ID, len(rootNames))
 	for _, rootName := range rootNames {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -138,28 +86,31 @@ func PackageGraphFromJsonnetWithOptions(
 		roots[rootName] = id
 	}
 
-	return &PackageGraph{
+	graph := &pkggraph.Graph{
 		Nodes: materializer.nodes,
 		Roots: roots,
-	}, nil
+	}
+	if err := graph.Validate(); err != nil {
+		return nil, err
+	}
+	return graph, nil
 }
 
-// PackageGraphFromValues materializes package object values and their
-// transitive dependencies into one graph. Returned IDs correspond to values
-// in input order.
-func PackageGraphFromValues(
+// MaterializeValues materializes package object values and their transitive
+// dependencies. Returned IDs correspond to values in input order.
+func MaterializeValues(
 	ctx context.Context,
-	values []jsonnet.Value,
-) (*PackageGraph, []PackageID, error) {
+	values []gojsonnet.Value,
+) (*pkggraph.Graph, []pkggraph.ID, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
 	if len(values) == 0 {
-		return nil, nil, errors.New("pkgstore: package value list is empty")
+		return nil, nil, errors.New("pkggraph: package value list is empty")
 	}
 
 	materializer := newGraphMaterializer(ctx)
-	packageIDs := make([]PackageID, len(values))
+	packageIDs := make([]pkggraph.ID, len(values))
 	for index, value := range values {
 		id, err := materializer.packageID(
 			value,
@@ -170,18 +121,21 @@ func PackageGraphFromValues(
 		}
 		packageIDs[index] = id
 	}
-	return &PackageGraph{
+	graph := &pkggraph.Graph{
 		Nodes: materializer.nodes,
-		Roots: make(map[string]PackageID),
-	}, packageIDs, nil
+		Roots: make(map[string]pkggraph.ID),
+	}
+	if err := graph.Validate(); err != nil {
+		return nil, nil, err
+	}
+	return graph, packageIDs, nil
 }
 
 func newGraphMaterializer(ctx context.Context) graphMaterializer {
 	return graphMaterializer{
-		ctx:           ctx,
-		nodes:         make(map[PackageID]PackageDefinition),
-		canonicalByID: make(map[PackageID]string),
-		materialized:  make(map[jsonnet.ObjectToken]materializedObject),
+		ctx:          ctx,
+		nodes:        make(map[pkggraph.ID]pkggraph.Definition),
+		materialized: make(map[gojsonnet.ObjectToken]materializedObject),
 		packageFieldSet: stringSet(
 			"name",
 			"build",
@@ -190,34 +144,35 @@ func newGraphMaterializer(ctx context.Context) graphMaterializer {
 			"buildDeps",
 			"fetch",
 		),
+		buildFieldSet: stringSet("kind", "script"),
 		fetchFieldSet: stringSet("filename", "sha256", "urls"),
 	}
 }
 
 type graphMaterializer struct {
 	ctx             context.Context
-	nodes           map[PackageID]PackageDefinition
-	canonicalByID   map[PackageID]string
-	materialized    map[jsonnet.ObjectToken]materializedObject
+	nodes           map[pkggraph.ID]pkggraph.Definition
+	materialized    map[gojsonnet.ObjectToken]materializedObject
 	packageFieldSet map[string]struct{}
+	buildFieldSet   map[string]struct{}
 	fetchFieldSet   map[string]struct{}
 }
 
 type materializedObject struct {
 	path     string
-	id       PackageID
+	id       pkggraph.ID
 	visiting bool
 }
 
 func (m *graphMaterializer) packageID(
-	value jsonnet.Value,
+	value gojsonnet.Value,
 	path string,
-) (PackageID, error) {
+) (pkggraph.ID, error) {
 	if err := m.ctx.Err(); err != nil {
 		return "", err
 	}
 
-	object, ok := value.(jsonnet.ObjectValue)
+	object, ok := value.(gojsonnet.ObjectValue)
 	if !ok {
 		return "", fmt.Errorf(
 			"%s: expected package object, got %s",
@@ -246,17 +201,18 @@ func (m *graphMaterializer) packageID(
 	if err != nil {
 		return "", err
 	}
-
-	canonical, err := json.Marshal(definition)
+	definition, err = pkggraph.NormalizeDefinition(definition)
 	if err != nil {
-		return "", fmt.Errorf("%s: encode package definition: %w", path, err)
+		return "", fmt.Errorf("%s: %w", path, err)
 	}
-	id := packageIDFromCanonical(canonical)
 
-	if previous, ok := m.canonicalByID[id]; ok && previous != string(canonical) {
+	id, err := pkggraph.IDForDefinition(definition)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", path, err)
+	}
+	if previous, ok := m.nodes[id]; ok && !reflect.DeepEqual(previous, definition) {
 		return "", fmt.Errorf("%s: package ID collision for %s", path, id)
 	}
-	m.canonicalByID[id] = string(canonical)
 	m.nodes[id] = definition
 	m.materialized[token] = materializedObject{
 		path: path,
@@ -265,26 +221,10 @@ func (m *graphMaterializer) packageID(
 	return id, nil
 }
 
-func packageIDForDefinition(definition PackageDefinition) (PackageID, error) {
-	definition.BuildEnv = resolveBuildEnvironment(definition.BuildEnv)
-	canonical, err := json.Marshal(definition)
-	if err != nil {
-		return "", err
-	}
-	return packageIDFromCanonical(canonical), nil
-}
-
-func packageIDFromCanonical(canonical []byte) PackageID {
-	hasher := sha256.New()
-	_, _ = hasher.Write([]byte("magpkg-package-v1\x00"))
-	_, _ = hasher.Write(canonical)
-	return PackageID(packageIDEncoding.EncodeToString(hasher.Sum(nil)))
-}
-
 func (m *graphMaterializer) packageDefinition(
-	object jsonnet.ObjectValue,
+	object gojsonnet.ObjectValue,
 	path string,
-) (PackageDefinition, error) {
+) (pkggraph.Definition, error) {
 	if err := validateObjectFields(
 		object,
 		path,
@@ -294,55 +234,59 @@ func (m *graphMaterializer) packageDefinition(
 		"buildDeps",
 		"fetch",
 	); err != nil {
-		return PackageDefinition{}, err
+		return pkggraph.Definition{}, err
 	}
 
 	name, err := optionalStringObjectField(object, "name", path)
 	if err != nil {
-		return PackageDefinition{}, err
+		return pkggraph.Definition{}, err
 	}
-	if err := validatePackageName(name); err != nil {
-		return PackageDefinition{}, fmt.Errorf("%s.name: %w", path, err)
+	if err := pkggraph.ValidateName(name); err != nil {
+		return pkggraph.Definition{}, fmt.Errorf("%s.name: %w", path, err)
 	}
 
-	build, err := stringObjectField(object, "build", path)
+	buildValue, err := objectField(object, "build", path)
 	if err != nil {
-		return PackageDefinition{}, err
+		return pkggraph.Definition{}, err
+	}
+	build, err := m.buildSpec(buildValue, path+".build")
+	if err != nil {
+		return pkggraph.Definition{}, err
 	}
 
 	buildEnv, err := buildEnvironmentObjectField(object, "buildEnv", path)
 	if err != nil {
-		return PackageDefinition{}, err
+		return pkggraph.Definition{}, err
 	}
 
 	runDepsValue, err := objectField(object, "runDeps", path)
 	if err != nil {
-		return PackageDefinition{}, err
+		return pkggraph.Definition{}, err
 	}
 	runDeps, err := m.dependencies(runDepsValue, path+".runDeps")
 	if err != nil {
-		return PackageDefinition{}, err
+		return pkggraph.Definition{}, err
 	}
 
 	buildDepsValue, err := objectField(object, "buildDeps", path)
 	if err != nil {
-		return PackageDefinition{}, err
+		return pkggraph.Definition{}, err
 	}
 	buildDeps, err := m.dependencies(buildDepsValue, path+".buildDeps")
 	if err != nil {
-		return PackageDefinition{}, err
+		return pkggraph.Definition{}, err
 	}
 
 	fetchValue, err := objectField(object, "fetch", path)
 	if err != nil {
-		return PackageDefinition{}, err
+		return pkggraph.Definition{}, err
 	}
 	fetch, err := m.fetches(fetchValue, path+".fetch")
 	if err != nil {
-		return PackageDefinition{}, err
+		return pkggraph.Definition{}, err
 	}
 
-	return PackageDefinition{
+	return pkggraph.Definition{
 		Name:      name,
 		Build:     build,
 		BuildEnv:  buildEnv,
@@ -352,8 +296,46 @@ func (m *graphMaterializer) packageDefinition(
 	}, nil
 }
 
+func (m *graphMaterializer) buildSpec(
+	value gojsonnet.Value,
+	path string,
+) (pkggraph.BuildSpec, error) {
+	object, ok := value.(gojsonnet.ObjectValue)
+	if !ok {
+		return pkggraph.BuildSpec{}, fmt.Errorf(
+			"%s: expected object, got %s",
+			path,
+			jsonnetValueType(value),
+		)
+	}
+	if err := validateObjectFields(
+		object,
+		path,
+		m.buildFieldSet,
+		"kind",
+	); err != nil {
+		return pkggraph.BuildSpec{}, err
+	}
+	kind, err := stringObjectField(object, "kind", path)
+	if err != nil {
+		return pkggraph.BuildSpec{}, err
+	}
+	script, err := optionalStringObjectField(object, "script", path)
+	if err != nil {
+		return pkggraph.BuildSpec{}, err
+	}
+	build := pkggraph.BuildSpec{
+		Kind:   pkggraph.BuildKind(kind),
+		Script: script,
+	}
+	if err := pkggraph.ValidateBuildSpec(build); err != nil {
+		return pkggraph.BuildSpec{}, fmt.Errorf("%s: %w", path, err)
+	}
+	return build, nil
+}
+
 func buildEnvironmentObjectField(
-	object jsonnet.ObjectValue,
+	object gojsonnet.ObjectValue,
 	field string,
 	path string,
 ) (map[string]string, error) {
@@ -362,9 +344,9 @@ func buildEnvironmentObjectField(
 		return nil, fmt.Errorf("%s.%s: %w", path, field, err)
 	}
 	if !found {
-		return resolveBuildEnvironment(nil), nil
+		return nil, nil
 	}
-	environmentObject, ok := value.(jsonnet.ObjectValue)
+	environmentObject, ok := value.(gojsonnet.ObjectValue)
 	if !ok {
 		return nil, fmt.Errorf(
 			"%s.%s: expected object, got %s",
@@ -374,7 +356,7 @@ func buildEnvironmentObjectField(
 		)
 	}
 
-	environment := resolveBuildEnvironment(nil)
+	environment := make(map[string]string)
 	names, err := environmentObject.Fields()
 	if err != nil {
 		return nil, fmt.Errorf("%s.%s: %w", path, field, err)
@@ -387,7 +369,7 @@ func buildEnvironmentObjectField(
 		if !found {
 			return nil, fmt.Errorf("%s.%s[%q]: field disappeared", path, field, name)
 		}
-		stringValue, ok := value.(jsonnet.StringValue)
+		stringValue, ok := value.(gojsonnet.StringValue)
 		if !ok {
 			return nil, fmt.Errorf(
 				"%s.%s[%q]: expected string, got %s",
@@ -399,17 +381,14 @@ func buildEnvironmentObjectField(
 		}
 		environment[name] = string(stringValue)
 	}
-	if err := validateBuildEnvironment(environment); err != nil {
-		return nil, fmt.Errorf("%s.%s: %w", path, field, err)
-	}
 	return environment, nil
 }
 
 func (m *graphMaterializer) dependencies(
-	value jsonnet.Value,
+	value gojsonnet.Value,
 	path string,
-) ([]PackageID, error) {
-	array, ok := value.(jsonnet.ArrayValue)
+) ([]pkggraph.ID, error) {
+	array, ok := value.(gojsonnet.ArrayValue)
 	if !ok {
 		return nil, fmt.Errorf(
 			"%s: expected array, got %s",
@@ -418,7 +397,7 @@ func (m *graphMaterializer) dependencies(
 		)
 	}
 
-	dependencies := make([]PackageID, array.Len())
+	dependencies := make([]pkggraph.ID, array.Len())
 	for index := range dependencies {
 		if err := m.ctx.Err(); err != nil {
 			return nil, err
@@ -440,10 +419,10 @@ func (m *graphMaterializer) dependencies(
 }
 
 func (m *graphMaterializer) fetches(
-	value jsonnet.Value,
+	value gojsonnet.Value,
 	path string,
-) ([]Fetch, error) {
-	array, ok := value.(jsonnet.ArrayValue)
+) ([]pkggraph.Fetch, error) {
+	array, ok := value.(gojsonnet.ArrayValue)
 	if !ok {
 		return nil, fmt.Errorf(
 			"%s: expected array, got %s",
@@ -452,7 +431,7 @@ func (m *graphMaterializer) fetches(
 		)
 	}
 
-	fetches := make([]Fetch, array.Len())
+	fetches := make([]pkggraph.Fetch, array.Len())
 	for index := range fetches {
 		if err := m.ctx.Err(); err != nil {
 			return nil, err
@@ -462,7 +441,7 @@ func (m *graphMaterializer) fetches(
 		if err != nil {
 			return nil, fmt.Errorf("%s[%d]: %w", path, index, err)
 		}
-		object, ok := value.(jsonnet.ObjectValue)
+		object, ok := value.(gojsonnet.ObjectValue)
 		if !ok {
 			return nil, fmt.Errorf(
 				"%s[%d]: expected fetch object, got %s",
@@ -481,9 +460,9 @@ func (m *graphMaterializer) fetches(
 }
 
 func (m *graphMaterializer) fetch(
-	object jsonnet.ObjectValue,
+	object gojsonnet.ObjectValue,
 	path string,
-) (Fetch, error) {
+) (pkggraph.Fetch, error) {
 	if err := validateObjectFields(
 		object,
 		path,
@@ -492,24 +471,24 @@ func (m *graphMaterializer) fetch(
 		"sha256",
 		"urls",
 	); err != nil {
-		return Fetch{}, err
+		return pkggraph.Fetch{}, err
 	}
 
 	filename, err := stringObjectField(object, "filename", path)
 	if err != nil {
-		return Fetch{}, err
+		return pkggraph.Fetch{}, err
 	}
 	if filename == "" {
-		return Fetch{}, fmt.Errorf("%s.filename: must not be empty", path)
+		return pkggraph.Fetch{}, fmt.Errorf("%s.filename: must not be empty", path)
 	}
 
 	sha256Sum, err := stringObjectField(object, "sha256", path)
 	if err != nil {
-		return Fetch{}, err
+		return pkggraph.Fetch{}, err
 	}
 	decodedSHA256, err := hex.DecodeString(sha256Sum)
 	if err != nil || len(decodedSHA256) != sha256.Size {
-		return Fetch{}, fmt.Errorf(
+		return pkggraph.Fetch{}, fmt.Errorf(
 			"%s.sha256: expected a %d-character hexadecimal SHA-256 digest",
 			path,
 			sha256.Size*2,
@@ -518,14 +497,14 @@ func (m *graphMaterializer) fetch(
 
 	urlsValue, err := objectField(object, "urls", path)
 	if err != nil {
-		return Fetch{}, err
+		return pkggraph.Fetch{}, err
 	}
 	urls, err := m.stringArray(urlsValue, path+".urls")
 	if err != nil {
-		return Fetch{}, err
+		return pkggraph.Fetch{}, err
 	}
 
-	return Fetch{
+	return pkggraph.Fetch{
 		Filename: filename,
 		SHA256:   sha256Sum,
 		URLs:     urls,
@@ -533,7 +512,7 @@ func (m *graphMaterializer) fetch(
 }
 
 func validateObjectFields(
-	object jsonnet.ObjectValue,
+	object gojsonnet.ObjectValue,
 	path string,
 	allowed map[string]struct{},
 	required ...string,
@@ -559,10 +538,10 @@ func validateObjectFields(
 }
 
 func objectField(
-	object jsonnet.ObjectValue,
+	object gojsonnet.ObjectValue,
 	field string,
 	path string,
-) (jsonnet.Value, error) {
+) (gojsonnet.Value, error) {
 	value, found, err := object.Field(field)
 	if err != nil {
 		return nil, fmt.Errorf("%s.%s: %w", path, field, err)
@@ -574,7 +553,7 @@ func objectField(
 }
 
 func stringObjectField(
-	object jsonnet.ObjectValue,
+	object gojsonnet.ObjectValue,
 	field string,
 	path string,
 ) (string, error) {
@@ -582,7 +561,7 @@ func stringObjectField(
 	if err != nil {
 		return "", err
 	}
-	stringValue, ok := value.(jsonnet.StringValue)
+	stringValue, ok := value.(gojsonnet.StringValue)
 	if !ok {
 		return "", fmt.Errorf(
 			"%s.%s: expected string, got %s",
@@ -595,7 +574,7 @@ func stringObjectField(
 }
 
 func optionalStringObjectField(
-	object jsonnet.ObjectValue,
+	object gojsonnet.ObjectValue,
 	field string,
 	path string,
 ) (string, error) {
@@ -606,7 +585,7 @@ func optionalStringObjectField(
 	if !found {
 		return "", nil
 	}
-	stringValue, ok := value.(jsonnet.StringValue)
+	stringValue, ok := value.(gojsonnet.StringValue)
 	if !ok {
 		return "", fmt.Errorf(
 			"%s.%s: expected string, got %s",
@@ -619,10 +598,10 @@ func optionalStringObjectField(
 }
 
 func (m *graphMaterializer) stringArray(
-	value jsonnet.Value,
+	value gojsonnet.Value,
 	path string,
 ) ([]string, error) {
-	array, ok := value.(jsonnet.ArrayValue)
+	array, ok := value.(gojsonnet.ArrayValue)
 	if !ok {
 		return nil, fmt.Errorf(
 			"%s: expected array, got %s",
@@ -641,7 +620,7 @@ func (m *graphMaterializer) stringArray(
 		if err != nil {
 			return nil, fmt.Errorf("%s[%d]: %w", path, index, err)
 		}
-		stringValue, ok := value.(jsonnet.StringValue)
+		stringValue, ok := value.(gojsonnet.StringValue)
 		if !ok {
 			return nil, fmt.Errorf(
 				"%s[%d]: expected string, got %s",
@@ -655,21 +634,21 @@ func (m *graphMaterializer) stringArray(
 	return strings, nil
 }
 
-func jsonnetValueType(value jsonnet.Value) string {
+func jsonnetValueType(value gojsonnet.Value) string {
 	switch value.(type) {
-	case jsonnet.NullValue:
+	case gojsonnet.NullValue:
 		return "null"
-	case jsonnet.BoolValue:
+	case gojsonnet.BoolValue:
 		return "boolean"
-	case jsonnet.NumberValue:
+	case gojsonnet.NumberValue:
 		return "number"
-	case jsonnet.StringValue:
+	case gojsonnet.StringValue:
 		return "string"
-	case jsonnet.ArrayValue:
+	case gojsonnet.ArrayValue:
 		return "array"
-	case jsonnet.ObjectValue:
+	case gojsonnet.ObjectValue:
 		return "object"
-	case jsonnet.FunctionValue:
+	case gojsonnet.FunctionValue:
 		return "function"
 	default:
 		return fmt.Sprintf("%T", value)

@@ -9,7 +9,7 @@ local build_policy = {
 
 local bubblewrap = build_policy + {
   name: 'bubblewrap',
-  build: |||
+  build: { kind: 'script', script: |||
     tar -xJf /fetch/libcap-2.78.tar.xz
     tar -xJf /fetch/bubblewrap-0.11.2.tar.xz
 
@@ -70,7 +70,7 @@ local bubblewrap = build_policy + {
       "$capdir/libcap.a" \
       -o /out/bin/bwrap
     strip /out/bin/bwrap
-  |||,
+  ||| },
   runDeps: [root_layout],
   buildDeps: [bootstrap],
   fetch: [

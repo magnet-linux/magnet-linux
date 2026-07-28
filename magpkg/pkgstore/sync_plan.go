@@ -8,34 +8,36 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
 )
 
-// SyncAction describes a filesystem change made by Sync or Uninstall.
-type SyncAction string
+// DestinationAction describes a filesystem change made by Sync or Uninstall.
+type DestinationAction string
 
 const (
-	SyncCreate           SyncAction = "create"
-	SyncReplace          SyncAction = "replace"
-	SyncRemove           SyncAction = "remove"
-	SyncChmod            SyncAction = "chmod"
-	SyncReplaceModified  SyncAction = "replace-modified"
-	SyncRemoveModified   SyncAction = "remove-modified"
-	SyncRepairModified   SyncAction = "repair-modified"
-	SyncReplaceUnmanaged SyncAction = "replace-unmanaged"
-	SyncDeleteUnmanaged  SyncAction = "delete-unmanaged"
+	DestinationCreate           DestinationAction = "create"
+	DestinationReplace          DestinationAction = "replace"
+	DestinationRemove           DestinationAction = "remove"
+	DestinationChmod            DestinationAction = "chmod"
+	DestinationReplaceModified  DestinationAction = "replace-modified"
+	DestinationRemoveModified   DestinationAction = "remove-modified"
+	DestinationRepairModified   DestinationAction = "repair-modified"
+	DestinationReplaceUnmanaged DestinationAction = "replace-unmanaged"
+	DestinationDeleteUnmanaged  DestinationAction = "delete-unmanaged"
 )
 
-// SyncChange is one planned filesystem change. Path is relative to the
+// DestinationChange is one planned filesystem change. Path is relative to the
 // destination.
-type SyncChange struct {
-	Action SyncAction
+type DestinationChange struct {
+	Action DestinationAction
 	Path   string
 }
 
 type syncPlan struct {
 	destination string
 	desiredRoot string
-	roots       []PackageID
+	roots       []pkggraph.ID
 	packages    []syncManifestPackage
 	desired     map[string]desiredSyncEntry
 	ownedDirs   map[string]bool
@@ -46,7 +48,7 @@ type syncPlan struct {
 	removeDirs    []string
 	chmodDirs     []string
 	chownDirs     map[string]bool
-	changes       []SyncChange
+	changes       []DestinationChange
 }
 
 type syncPlanOptions struct {
@@ -91,7 +93,7 @@ func planSyncDestination(
 	destination string,
 	desiredRoot string,
 	desiredEntries []desiredSyncEntry,
-	roots []PackageID,
+	roots []pkggraph.ID,
 	packages []syncManifestPackage,
 	operation string,
 	options syncPlanOptions,
@@ -103,11 +105,15 @@ func planSyncDestination(
 	if operation == "uninstall" && !found {
 		return nil, errors.New("destination has no magpkg manifest")
 	}
+	if operation == "uninstall" {
+		roots = manifest.Roots
+		packages = manifest.Packages
+	}
 
 	plan := &syncPlan{
 		destination: destination,
 		desiredRoot: desiredRoot,
-		roots:       append([]PackageID(nil), roots...),
+		roots:       append([]pkggraph.ID(nil), roots...),
 		packages:    append([]syncManifestPackage(nil), packages...),
 		desired:     make(map[string]desiredSyncEntry, len(desiredEntries)),
 		ownedDirs:   make(map[string]bool),
@@ -171,8 +177,8 @@ func planSyncDestination(
 				plan.ownedDirs[entry.Path] = true
 				plan.createDirs = append(plan.createDirs, entry.Path)
 				plan.chmodDirs = append(plan.chmodDirs, entry.Path)
-				plan.changes = append(plan.changes, SyncChange{
-					Action: SyncRepairModified,
+				plan.changes = append(plan.changes, DestinationChange{
+					Action: DestinationRepairModified,
 					Path:   entry.Path,
 				})
 			case wasManaged:
@@ -180,14 +186,14 @@ func planSyncDestination(
 				if wasModified {
 					plan.chmodDirs = append(plan.chmodDirs, entry.Path)
 					plan.chownDirs[entry.Path] = true
-					plan.changes = append(plan.changes, SyncChange{
-						Action: SyncRepairModified,
+					plan.changes = append(plan.changes, DestinationChange{
+						Action: DestinationRepairModified,
 						Path:   entry.Path,
 					})
 				} else if oldEntry.Mode != entry.Mode {
 					plan.chmodDirs = append(plan.chmodDirs, entry.Path)
-					plan.changes = append(plan.changes, SyncChange{
-						Action: SyncChmod,
+					plan.changes = append(plan.changes, DestinationChange{
+						Action: DestinationChmod,
 						Path:   entry.Path,
 					})
 				}
@@ -198,8 +204,8 @@ func planSyncDestination(
 					plan.ownedDirs[entry.Path] = true
 					plan.createDirs = append(plan.createDirs, entry.Path)
 					plan.chmodDirs = append(plan.chmodDirs, entry.Path)
-					plan.changes = append(plan.changes, SyncChange{
-						Action: SyncCreate,
+					plan.changes = append(plan.changes, DestinationChange{
+						Action: DestinationCreate,
 						Path:   entry.Path,
 					})
 				case err != nil:
@@ -251,11 +257,11 @@ func planSyncDestination(
 		case wasManaged:
 			if wasModified || !desiredMatchesManifest(entry, oldEntry) {
 				plan.writeEntries = append(plan.writeEntries, entry.Path)
-				action := SyncReplace
+				action := DestinationReplace
 				if wasModified {
-					action = SyncReplaceModified
+					action = DestinationReplaceModified
 				}
-				plan.changes = append(plan.changes, SyncChange{
+				plan.changes = append(plan.changes, DestinationChange{
 					Action: action,
 					Path:   entry.Path,
 				})
@@ -265,8 +271,8 @@ func planSyncDestination(
 			switch {
 			case errors.Is(err, os.ErrNotExist):
 				plan.writeEntries = append(plan.writeEntries, entry.Path)
-				plan.changes = append(plan.changes, SyncChange{
-					Action: SyncCreate,
+				plan.changes = append(plan.changes, DestinationChange{
+					Action: DestinationCreate,
 					Path:   entry.Path,
 				})
 			case err != nil:
@@ -303,8 +309,8 @@ func planSyncDestination(
 					continue
 				}
 				plan.writeEntries = append(plan.writeEntries, entry.Path)
-				plan.changes = append(plan.changes, SyncChange{
-					Action: SyncReplaceUnmanaged,
+				plan.changes = append(plan.changes, DestinationChange{
+					Action: DestinationReplaceUnmanaged,
 					Path:   entry.Path,
 				})
 			}
@@ -320,36 +326,42 @@ func planSyncDestination(
 		} else {
 			plan.removeEntries = append(plan.removeEntries, entry.Path)
 		}
-		action := SyncRemove
+		action := DestinationRemove
 		if _, ok := modified[entry.Path]; ok {
-			action = SyncRemoveModified
+			action = DestinationRemoveModified
 		}
-		plan.changes = append(plan.changes, SyncChange{
+		plan.changes = append(plan.changes, DestinationChange{
 			Action: action,
 			Path:   entry.Path,
 		})
 	}
 
 	if options.deleteUnmanaged {
-		unmanagedEntries, unmanagedDirs, err := findUnmanagedSyncPaths(
-			ctx,
-			destination,
-			plan.desired,
-			old,
-		)
-		if err != nil {
+		if _, err := os.Lstat(destination); errors.Is(err, os.ErrNotExist) {
+			// A missing destination contains no unmanaged paths.
+		} else if err != nil {
 			return nil, err
-		}
-		plan.removeEntries = append(plan.removeEntries, unmanagedEntries...)
-		plan.removeDirs = append(plan.removeDirs, unmanagedDirs...)
-		for _, path := range append(
-			append([]string(nil), unmanagedEntries...),
-			unmanagedDirs...,
-		) {
-			plan.changes = append(plan.changes, SyncChange{
-				Action: SyncDeleteUnmanaged,
-				Path:   path,
-			})
+		} else {
+			unmanagedEntries, unmanagedDirs, err := findUnmanagedSyncPaths(
+				ctx,
+				destination,
+				plan.desired,
+				old,
+			)
+			if err != nil {
+				return nil, err
+			}
+			plan.removeEntries = append(plan.removeEntries, unmanagedEntries...)
+			plan.removeDirs = append(plan.removeDirs, unmanagedDirs...)
+			for _, path := range append(
+				append([]string(nil), unmanagedEntries...),
+				unmanagedDirs...,
+			) {
+				plan.changes = append(plan.changes, DestinationChange{
+					Action: DestinationDeleteUnmanaged,
+					Path:   path,
+				})
+			}
 		}
 	}
 

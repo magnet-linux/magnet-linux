@@ -1,4 +1,4 @@
-package pkgstore
+package pkggraph
 
 import (
 	"reflect"
@@ -36,5 +36,30 @@ func TestValidateBuildEnvironmentRejectsExecutorVariable(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("validateBuildEnvironment() accepted BUILD_PARALLELISM")
+	}
+}
+
+func TestNormalizeDefinitionStoresOnlyEffectiveOverrides(t *testing.T) {
+	definition := Definition{
+		Build: BuildSpec{Kind: BuildNone},
+		BuildEnv: map[string]string{
+			"HOME":   "/build",
+			"PATH":   "/bin",
+			"CUSTOM": "value",
+		},
+	}
+	normalized, err := NormalizeDefinition(definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"PATH":   "/bin",
+		"CUSTOM": "value",
+	}
+	if !reflect.DeepEqual(normalized.BuildEnv, want) {
+		t.Fatalf("normalized BuildEnv = %#v, want %#v", normalized.BuildEnv, want)
+	}
+	if len(definition.BuildEnv) != 3 {
+		t.Fatal("NormalizeDefinition mutated its input")
 	}
 }

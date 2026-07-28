@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
+	graphjsonnet "github.com/andrewchambers/magnet-linux/magpkg/pkggraph/jsonnet"
 	"github.com/andrewchambers/magnet-linux/magpkg/pkgstore"
 	"github.com/spf13/pflag"
 )
@@ -25,6 +27,16 @@ func runBuild(
 		"store",
 		"",
 		"package store path (default: $MAGPKG_STORE or ~/.magpkg/store)",
+	)
+	binaryCache := flags.String(
+		"binary-cache",
+		"",
+		"binary cache URL (default: $MAGPKG_BINARY_CACHE)",
+	)
+	cacheOnly := flags.Bool(
+		"cache-only",
+		false,
+		"require missing artifacts to be available from the binary cache",
 	)
 	jsonnetFileFlag := flags.StringP(
 		"file",
@@ -107,7 +119,10 @@ func runBuild(
 	if err != nil {
 		return err
 	}
-	store, err := pkgstore.Open(storePath)
+	store, err := pkgstore.OpenWithOptions(
+		storePath,
+		commandStoreOpenOptions(resolveBinaryCacheURL(*binaryCache)),
+	)
 	if err != nil {
 		return fmt.Errorf(
 			"open store %q (run `magpkg init` first): %w",
@@ -115,10 +130,10 @@ func runBuild(
 			err,
 		)
 	}
-	graph, err := pkgstore.PackageGraphFromJsonnetWithOptions(
+	graph, err := graphjsonnet.EvaluateFile(
 		ctx,
 		jsonnetFile,
-		pkgstore.JsonnetOptions{ExtVars: extStrings},
+		graphjsonnet.Options{ExtVars: extStrings},
 	)
 	if err != nil {
 		return err
@@ -134,6 +149,7 @@ func runBuild(
 		graph,
 		rootIDs,
 		pkgstore.BuildOptions{
+			CacheOnly:        *cacheOnly,
 			Jobs:             *jobs,
 			FetchJobs:        *fetchJobs,
 			BuildParallelism: *parallelism,
@@ -153,9 +169,9 @@ func runBuild(
 }
 
 func selectBuildRoots(
-	graph *pkgstore.PackageGraph,
+	graph *pkggraph.Graph,
 	selectors []string,
-) ([]pkgstore.PackageID, error) {
+) ([]pkggraph.ID, error) {
 	if graph == nil {
 		return nil, errors.New("package graph is nil")
 	}
@@ -168,8 +184,8 @@ func selectBuildRoots(
 		if len(rootNames) == 0 {
 			return nil, errors.New("package graph exports no roots")
 		}
-		rootIDs := make([]pkgstore.PackageID, 0, len(rootNames))
-		seen := make(map[pkgstore.PackageID]struct{}, len(rootNames))
+		rootIDs := make([]pkggraph.ID, 0, len(rootNames))
+		seen := make(map[pkggraph.ID]struct{}, len(rootNames))
 		for _, rootName := range rootNames {
 			packageID := graph.Roots[rootName]
 			if _, ok := seen[packageID]; ok {
@@ -181,12 +197,12 @@ func selectBuildRoots(
 		return rootIDs, nil
 	}
 
-	rootIDs := make([]pkgstore.PackageID, 0, len(selectors))
-	seen := make(map[pkgstore.PackageID]struct{}, len(selectors))
+	rootIDs := make([]pkggraph.ID, 0, len(selectors))
+	seen := make(map[pkggraph.ID]struct{}, len(selectors))
 	for _, selector := range selectors {
 		packageID, ok := graph.Roots[selector]
 		if !ok {
-			packageID = pkgstore.PackageID(selector)
+			packageID = pkggraph.ID(selector)
 			_, ok = graph.Nodes[packageID]
 		}
 		if !ok {

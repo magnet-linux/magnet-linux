@@ -6,6 +6,7 @@ require (
 	github.com/andrewchambers/go-jsonnet v0.0.0-20260724085550-8687087dbc54
 	github.com/klauspost/compress v1.19.1
 	github.com/spf13/pflag v1.0.10
+	github.com/ulikunitz/xz v0.5.16
 	github.com/vbauerster/mpb/v8 v8.13.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0

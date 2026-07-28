@@ -8,19 +8,21 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
 )
 
 func TestCleanPackagesRemovesExpiredAndRetainsTouched(t *testing.T) {
 	store := openTestStore(t)
-	expiredDefinition := PackageDefinition{Name: "expired"}
-	expiredID := testPackageID(t, expiredDefinition)
-	retainedDefinition := PackageDefinition{Name: "retained"}
-	retainedID := testPackageID(t, retainedDefinition)
+	expiredDefinition := pkggraph.Definition{Name: "expired", Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone}}
+	expiredID := testID(t, expiredDefinition)
+	retainedDefinition := pkggraph.Definition{Name: "retained", Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone}}
+	retainedID := testID(t, retainedDefinition)
 	writeTestArtifact(t, store, expiredID, expiredDefinition.Name)
 	writeTestArtifact(t, store, retainedID, retainedDefinition.Name)
 
 	workRoot := filepath.Join(store.Path(), buildWorkDirectory)
-	for _, packageID := range []PackageID{expiredID, retainedID} {
+	for _, packageID := range []pkggraph.ID{expiredID, retainedID} {
 		workPath := filepath.Join(workRoot, string(packageID))
 		if err := os.MkdirAll(workPath, 0o755); err != nil {
 			t.Fatal(err)
@@ -39,11 +41,11 @@ func TestCleanPackagesRemovesExpiredAndRetainsTouched(t *testing.T) {
 		}
 	}
 
-	graph := &PackageGraph{
-		Nodes: map[PackageID]PackageDefinition{
+	graph := &pkggraph.Graph{
+		Nodes: map[pkggraph.ID]pkggraph.Definition{
 			retainedID: retainedDefinition,
 		},
-		Roots: map[string]PackageID{"retained": retainedID},
+		Roots: map[string]pkggraph.ID{"retained": retainedID},
 	}
 	if _, err := store.PlanBuild(context.Background(), graph, retainedID); err != nil {
 		t.Fatal(err)
@@ -103,8 +105,8 @@ func TestCleanPackagesRemovesExpiredAndRetainsTouched(t *testing.T) {
 
 func TestCleanPackagesSkipsPackageHeldForUse(t *testing.T) {
 	store := openTestStore(t)
-	definition := PackageDefinition{Name: "in-use"}
-	packageID := testPackageID(t, definition)
+	definition := pkggraph.Definition{Name: "in-use", Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone}}
+	packageID := testID(t, definition)
 	writeTestArtifact(t, store, packageID, definition.Name)
 	artifactPath := store.packageArtifactPath(packageID, definition.Name)
 	old := time.Now().Add(-2 * time.Hour)
@@ -151,8 +153,8 @@ func TestCleanPackagesSkipsPackageHeldForUse(t *testing.T) {
 
 func TestCleanPackagesAllIgnoresFutureModificationTime(t *testing.T) {
 	store := openTestStore(t)
-	definition := PackageDefinition{Name: "future"}
-	packageID := testPackageID(t, definition)
+	definition := pkggraph.Definition{Name: "future", Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone}}
+	packageID := testID(t, definition)
 	writeTestArtifact(t, store, packageID, definition.Name)
 	artifactPath := store.packageArtifactPath(packageID, definition.Name)
 	future := time.Now().Add(24 * time.Hour)
@@ -218,7 +220,7 @@ func TestCleanPackagesValidationAndMissingDirectories(t *testing.T) {
 }
 
 func TestPackageArtifactEntryID(t *testing.T) {
-	packageID := PackageID(strings.Repeat("a", packageIDLength))
+	packageID := pkggraph.ID(strings.Repeat("a", pkggraph.IDLength))
 	for _, name := range []string{
 		packageArtifactFilename(packageID, ""),
 		packageArtifactFilename(packageID, "gcc-15.1"),

@@ -22,7 +22,10 @@ root and its value must be a package object. For example:
 ```
 local hello = {
   name: 'hello',
-  build: 'mkdir -p /out/bin; cp /fetch/hello /out/bin/hello',
+  build: {
+    kind: 'script',
+    script: 'mkdir -p /out/bin; cp /fetch/hello /out/bin/hello',
+  },
   runDeps: [],
   buildDeps: [],
   fetch: [{
@@ -58,17 +61,23 @@ A package object accepts exactly these fields:
 	prefix on the stored package archive.
 
 *build*
-	Required string containing the shell build program. An empty string
-	produces a package without running a build program.
+	Required object describing how output is produced. It has a required
+	*kind* string and accepts a *script* string:
 
-	The special value *untar* does not run a sandboxed build. Instead, each
-	fetched archive is extracted directly into the package output in fetch
-	order.
+	- *{ kind: 'none' }* produces an empty meta-package.
+	- *{ kind: 'script', script: '...' }* runs the non-empty shell program in
+	  the build sandbox.
+	- *{ kind: 'unpack' }* extracts each fetched archive directly into the
+	  package output in fetch order.
+
+	*script* is required and non-empty for the *script* kind and is rejected
+	for the other kinds.
 
 *buildEnv*
 	Optional object whose field names and values are strings. Its values
-	override the default build environment described in
-	*BUILD ENVIRONMENT*.
+	override the default build environment described in *BUILD ENVIRONMENT*.
+	Materialized graphs retain only effective overrides; entries equal to a
+	default are removed.
 
 *runDeps*
 	Required array of package objects. Runtime dependencies are included in
@@ -183,14 +192,14 @@ as follows:
 	replace it with its package ID.
 - Overlay *buildEnv* on the default build environment.
 - Encode the resulting definition as compact canonical JSON.
-- Hash the literal byte prefix "magpkg-package-v1", one NUL byte, and the
+- Hash the literal byte prefix "magpkg-package-v2", one NUL byte, and the
 	canonical JSON bytes.
 - Encode the 32-byte digest as unpadded lowercase Base32.
 
 In notation:
 
 ```
-digest = SHA256(bytes("magpkg-package-v1") || byte(0) || canonical_json)
+digest = SHA256(bytes("magpkg-package-v2") || byte(0) || canonical_json)
 id = base32_lowercase_no_padding(digest)
 ```
 
@@ -216,8 +225,9 @@ name, build, buildEnv, runDeps, buildDeps, fetch
 
 Every field is present. An absent *name* becomes "", empty arrays become [],
 and *buildEnv* contains the complete default-plus-overrides map. Environment
-keys are sorted lexicographically by the encoder. Each fetch object emits
-fields in this order:
+keys are sorted lexicographically by the encoder. The *build* object emits
+*kind* followed by *script*; *script* is present as "" for non-script kinds.
+Each fetch object emits fields in this order:
 
 ```
 filename, sha256, urls
@@ -235,7 +245,7 @@ This package:
 {
   hello: {
     name: 'hello',
-    build: 'true',
+    build: { kind: 'script', script: 'true' },
     runDeps: [],
     buildDeps: [],
     fetch: [],
@@ -246,20 +256,20 @@ This package:
 has this exact canonical JSON (shown on one line because whitespace matters):
 
 ```
-{"name":"hello","build":"true","buildEnv":{"CONFIG_SHELL":"/bin/sh","HOME":"/build","LC_ALL":"C","PATH":"/usr/bin:/bin:/usr/sbin:/sbin","SHELL":"/bin/sh","TZ":"UTC"},"runDeps":[],"buildDeps":[],"fetch":[]}
+{"name":"hello","build":{"kind":"script","script":"true"},"buildEnv":{"CONFIG_SHELL":"/bin/sh","HOME":"/build","LC_ALL":"C","PATH":"/usr/bin:/bin:/usr/sbin:/sbin","SHELL":"/bin/sh","TZ":"UTC"},"runDeps":[],"buildDeps":[],"fetch":[]}
 ```
 
 Its package ID is:
 
 ```
-sq6aoeikfl5mexttnyqjwdnqqv7s4wcakioly3bntat5gn2dkz3a
+fy7f2e4kuvha4t5x66ibmn3itg3vqj3zfj7vbx6gk62q4xq5ghha
 ```
 
 # HASH BOUNDARY
 
 The following inputs are included, directly or transitively, in the ID:
 
-- the package name and build program
+- the package name, build kind, and build script
 - the fully resolved build environment
 - ordered runtime and build dependency IDs
 - ordered fetch definitions, including filenames, digest spellings, and URLs

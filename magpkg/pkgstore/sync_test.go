@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
 	"golang.org/x/sys/unix"
 )
 
@@ -49,7 +50,7 @@ func TestSyncAndUninstallPreserveUnmanagedPaths(t *testing.T) {
 	result, err := store.Sync(
 		context.Background(),
 		graph,
-		[]PackageID{packageID},
+		[]pkggraph.ID{packageID},
 		destination,
 		SyncOptions{},
 	)
@@ -110,12 +111,20 @@ func TestSyncAndUninstallPreserveUnmanagedPaths(t *testing.T) {
 		t.Fatalf("manifest claimed pre-existing directory: %v", manifestPaths)
 	}
 
-	if _, err := Uninstall(
+	uninstallResult, err := Uninstall(
 		context.Background(),
 		destination,
 		UninstallOptions{},
-	); err != nil {
+	)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !slices.Equal(uninstallResult.Packages, []pkggraph.ID{packageID}) {
+		t.Fatalf(
+			"uninstalled packages = %v, want [%s]",
+			uninstallResult.Packages,
+			packageID,
+		)
 	}
 	assertSyncMissing(t, filepath.Join(destination, "bin", "hello"))
 	assertSyncMissing(t, filepath.Join(destination, "bin", "hi"))
@@ -145,7 +154,7 @@ func TestSyncRejectsModifiedManagedFilesBeforeChangingAnything(t *testing.T) {
 	if _, err := store.Sync(
 		context.Background(),
 		syncTestGraph(oldID, oldDefinition),
-		[]PackageID{oldID},
+		[]pkggraph.ID{oldID},
 		destination,
 		SyncOptions{},
 	); err != nil {
@@ -170,7 +179,7 @@ func TestSyncRejectsModifiedManagedFilesBeforeChangingAnything(t *testing.T) {
 	_, err := store.Sync(
 		context.Background(),
 		syncTestGraph(newID, newDefinition),
-		[]PackageID{newID},
+		[]pkggraph.ID{newID},
 		destination,
 		SyncOptions{},
 	)
@@ -215,7 +224,7 @@ func TestSyncReconcilesManagedClosure(t *testing.T) {
 	if _, err := store.Sync(
 		context.Background(),
 		syncTestGraph(oldID, oldDefinition),
-		[]PackageID{oldID},
+		[]pkggraph.ID{oldID},
 		destination,
 		SyncOptions{},
 	); err != nil {
@@ -234,17 +243,17 @@ func TestSyncReconcilesManagedClosure(t *testing.T) {
 	result, err := store.Sync(
 		context.Background(),
 		syncTestGraph(newID, newDefinition),
-		[]PackageID{newID},
+		[]pkggraph.ID{newID},
 		destination,
 		SyncOptions{},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []SyncChange{
-		{Action: SyncCreate, Path: "bin/new"},
-		{Action: SyncReplace, Path: "share/common"},
-		{Action: SyncRemove, Path: "bin/old"},
+	for _, expected := range []DestinationChange{
+		{Action: DestinationCreate, Path: "bin/new"},
+		{Action: DestinationReplace, Path: "share/common"},
+		{Action: DestinationRemove, Path: "bin/old"},
 	} {
 		if !slices.Contains(result.Changes, expected) {
 			t.Fatalf("sync changes = %+v, missing %+v", result.Changes, expected)
@@ -287,7 +296,7 @@ func TestSyncRejectsUnmanagedFileCollision(t *testing.T) {
 	_, err := store.Sync(
 		context.Background(),
 		syncTestGraph(packageID, definition),
-		[]PackageID{packageID},
+		[]pkggraph.ID{packageID},
 		destination,
 		SyncOptions{},
 	)
@@ -312,7 +321,7 @@ func TestSyncForceReplacesModifiedAndUnmanagedFiles(t *testing.T) {
 	if _, err := store.Sync(
 		context.Background(),
 		syncTestGraph(oldID, oldDefinition),
-		[]PackageID{oldID},
+		[]pkggraph.ID{oldID},
 		destination,
 		SyncOptions{},
 	); err != nil {
@@ -348,16 +357,16 @@ func TestSyncForceReplacesModifiedAndUnmanagedFiles(t *testing.T) {
 	result, err := store.Sync(
 		context.Background(),
 		syncTestGraph(newID, newDefinition),
-		[]PackageID{newID},
+		[]pkggraph.ID{newID},
 		destination,
 		SyncOptions{Force: true},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []SyncChange{
-		{Action: SyncReplaceModified, Path: "bin/managed"},
-		{Action: SyncReplaceUnmanaged, Path: "bin/collision"},
+	for _, expected := range []DestinationChange{
+		{Action: DestinationReplaceModified, Path: "bin/managed"},
+		{Action: DestinationReplaceUnmanaged, Path: "bin/collision"},
 	} {
 		if !slices.Contains(result.Changes, expected) {
 			t.Fatalf("sync changes = %+v, missing %+v", result.Changes, expected)
@@ -392,7 +401,7 @@ func TestSyncForceRemovesModifiedObsoleteFile(t *testing.T) {
 	if _, err := store.Sync(
 		context.Background(),
 		syncTestGraph(oldID, oldDefinition),
-		[]PackageID{oldID},
+		[]pkggraph.ID{oldID},
 		destination,
 		SyncOptions{},
 	); err != nil {
@@ -417,15 +426,15 @@ func TestSyncForceRemovesModifiedObsoleteFile(t *testing.T) {
 	result, err := store.Sync(
 		context.Background(),
 		syncTestGraph(newID, newDefinition),
-		[]PackageID{newID},
+		[]pkggraph.ID{newID},
 		destination,
 		SyncOptions{Force: true},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(result.Changes, SyncChange{
-		Action: SyncRemoveModified,
+	if !slices.Contains(result.Changes, DestinationChange{
+		Action: DestinationRemoveModified,
 		Path:   "obsolete",
 	}) {
 		t.Fatalf("sync changes = %+v, missing remove-modified", result.Changes)
@@ -453,7 +462,7 @@ func TestUninstallForceRemovesModifiedFiles(t *testing.T) {
 	if _, err := store.Sync(
 		context.Background(),
 		syncTestGraph(packageID, definition),
-		[]PackageID{packageID},
+		[]pkggraph.ID{packageID},
 		destination,
 		SyncOptions{},
 	); err != nil {
@@ -475,8 +484,8 @@ func TestUninstallForceRemovesModifiedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(result.Changes, SyncChange{
-		Action: SyncRemoveModified,
+	if !slices.Contains(result.Changes, DestinationChange{
+		Action: DestinationRemoveModified,
 		Path:   "hello",
 	}) {
 		t.Fatalf(
@@ -486,6 +495,69 @@ func TestUninstallForceRemovesModifiedFiles(t *testing.T) {
 	}
 	assertSyncMissing(t, filepath.Join(destination, "hello"))
 	assertSyncMissing(t, syncManifestPath(destination))
+}
+
+func TestSyncDryRunDoesNotCreateMissingDestination(t *testing.T) {
+	store := openTestStore(t)
+	definition, packageID := writeSyncTestPackage(
+		t,
+		store,
+		"hello",
+		func(root string) {
+			writeSyncTestFile(t, root, "hello", "hello\n", 0o644)
+		},
+	)
+	destination := filepath.Join(t.TempDir(), "missing")
+	if _, err := store.Sync(
+		context.Background(),
+		syncTestGraph(packageID, definition),
+		[]pkggraph.ID{packageID},
+		destination,
+		SyncOptions{DryRun: true},
+	); err != nil {
+		t.Fatal(err)
+	}
+	assertSyncMissing(t, destination)
+}
+
+func TestSyncRequiresArtifactsBuiltSeparately(t *testing.T) {
+	store := openTestStore(t)
+	definition := pkggraph.Definition{
+		Name:  "empty",
+		Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone},
+	}
+	packageID := testID(t, definition)
+	graph := syncTestGraph(packageID, definition)
+	destination := filepath.Join(t.TempDir(), "root")
+
+	if _, err := store.Sync(
+		context.Background(),
+		graph,
+		[]pkggraph.ID{packageID},
+		destination,
+		SyncOptions{},
+	); err == nil || !strings.Contains(err.Error(), "has no package artifact") {
+		t.Fatalf("Sync() error = %v, want missing artifact error", err)
+	}
+	if _, err := store.BuildPackages(
+		context.Background(),
+		graph,
+		packageID,
+	); err != nil {
+		t.Fatalf("BuildPackages(): %v", err)
+	}
+	if _, err := store.Sync(
+		context.Background(),
+		graph,
+		[]pkggraph.ID{packageID},
+		destination,
+		SyncOptions{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(syncManifestPath(destination)); err != nil {
+		t.Fatalf("stat sync manifest: %v", err)
+	}
 }
 
 func TestSyncDeleteUnmanagedRequiresForce(t *testing.T) {
@@ -502,7 +574,7 @@ func TestSyncDeleteUnmanagedRequiresForce(t *testing.T) {
 	_, err := store.Sync(
 		context.Background(),
 		syncTestGraph(packageID, definition),
-		[]PackageID{packageID},
+		[]pkggraph.ID{packageID},
 		destination,
 		SyncOptions{DeleteUnmanaged: true},
 	)
@@ -528,7 +600,7 @@ func TestSyncDeleteUnmanagedDoesNotFollowSymlinks(t *testing.T) {
 	if _, err := store.Sync(
 		context.Background(),
 		graph,
-		[]PackageID{packageID},
+		[]pkggraph.ID{packageID},
 		destination,
 		SyncOptions{},
 	); err != nil {
@@ -548,7 +620,7 @@ func TestSyncDeleteUnmanagedDoesNotFollowSymlinks(t *testing.T) {
 	result, err := store.Sync(
 		context.Background(),
 		graph,
-		[]PackageID{packageID},
+		[]pkggraph.ID{packageID},
 		destination,
 		SyncOptions{
 			Force:           true,
@@ -565,8 +637,8 @@ func TestSyncDeleteUnmanagedDoesNotFollowSymlinks(t *testing.T) {
 		"var/cache",
 		"var",
 	} {
-		if !slices.Contains(result.Changes, SyncChange{
-			Action: SyncDeleteUnmanaged,
+		if !slices.Contains(result.Changes, DestinationChange{
+			Action: DestinationDeleteUnmanaged,
 			Path:   path,
 		}) {
 			t.Fatalf(
@@ -631,7 +703,7 @@ func TestSyncDeleteUnmanagedDoesNotCrossBindMounts(t *testing.T) {
 	result, err := store.Sync(
 		context.Background(),
 		syncTestGraph(packageID, definition),
-		[]PackageID{packageID},
+		[]pkggraph.ID{packageID},
 		destination,
 		SyncOptions{
 			Force:           true,
@@ -664,7 +736,7 @@ func TestSyncDryRunDoesNotInstallOrWriteManifest(t *testing.T) {
 	result, err := store.Sync(
 		context.Background(),
 		syncTestGraph(packageID, definition),
-		[]PackageID{packageID},
+		[]pkggraph.ID{packageID},
 		destination,
 		SyncOptions{DryRun: true},
 	)
@@ -674,14 +746,15 @@ func TestSyncDryRunDoesNotInstallOrWriteManifest(t *testing.T) {
 	if !result.DryRun {
 		t.Fatal("dry-run result was not marked as a dry run")
 	}
-	if !slices.Contains(result.Changes, SyncChange{
-		Action: SyncCreate,
+	if !slices.Contains(result.Changes, DestinationChange{
+		Action: DestinationCreate,
 		Path:   "hello",
 	}) {
 		t.Fatalf("dry-run changes = %+v", result.Changes)
 	}
 	assertSyncMissing(t, filepath.Join(destination, "hello"))
 	assertSyncMissing(t, syncManifestPath(destination))
+	assertSyncMissing(t, syncMetadataPath(destination))
 }
 
 func TestSyncLeavesNonEmptyManagedDirectoryOnUninstall(t *testing.T) {
@@ -698,7 +771,7 @@ func TestSyncLeavesNonEmptyManagedDirectoryOnUninstall(t *testing.T) {
 	if _, err := store.Sync(
 		context.Background(),
 		syncTestGraph(packageID, definition),
-		[]PackageID{packageID},
+		[]pkggraph.ID{packageID},
 		destination,
 		SyncOptions{},
 	); err != nil {
@@ -748,7 +821,7 @@ func TestSyncFailsWhenDestinationLockIsBusy(t *testing.T) {
 	_, err = store.Sync(
 		context.Background(),
 		syncTestGraph(packageID, definition),
-		[]PackageID{packageID},
+		[]pkggraph.ID{packageID},
 		destination,
 		SyncOptions{},
 	)
@@ -762,10 +835,13 @@ func writeSyncTestPackage(
 	store *Store,
 	name string,
 	populate func(string),
-) (PackageDefinition, PackageID) {
+) (pkggraph.Definition, pkggraph.ID) {
 	t.Helper()
-	definition := PackageDefinition{Name: name}
-	packageID := testPackageID(t, definition)
+	definition := pkggraph.Definition{
+		Name:  name,
+		Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone},
+	}
+	packageID := testID(t, definition)
 	root := t.TempDir()
 	populate(root)
 	if err := os.MkdirAll(
@@ -785,12 +861,12 @@ func writeSyncTestPackage(
 }
 
 func syncTestGraph(
-	packageID PackageID,
-	definition PackageDefinition,
-) *PackageGraph {
-	return &PackageGraph{
-		Nodes: map[PackageID]PackageDefinition{packageID: definition},
-		Roots: map[string]PackageID{definition.Name: packageID},
+	packageID pkggraph.ID,
+	definition pkggraph.Definition,
+) *pkggraph.Graph {
+	return &pkggraph.Graph{
+		Nodes: map[pkggraph.ID]pkggraph.Definition{packageID: definition},
+		Roots: map[string]pkggraph.ID{definition.Name: packageID},
 	}
 }
 

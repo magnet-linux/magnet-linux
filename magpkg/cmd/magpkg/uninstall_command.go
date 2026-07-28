@@ -71,6 +71,6 @@ func runUninstall(
 	if err != nil {
 		return err
 	}
-	writeSyncChanges(stdout, result)
+	writeDestinationChanges(stdout, result)
 	return nil
 }

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
 )
 
 func TestBuildOutputWriterPrefixesCompleteAndPartialLines(t *testing.T) {
@@ -95,10 +97,10 @@ func TestBuildOutputWriterBoundsLinesWithoutAddingBlankLine(t *testing.T) {
 }
 
 func TestBuildOutputPrefixUsesNameAndShortID(t *testing.T) {
-	packageID := PackageID(strings.Repeat("a", packageIDLength))
+	packageID := pkggraph.ID(strings.Repeat("a", pkggraph.IDLength))
 	if got, want := buildOutputPrefix(PlannedPackage{
 		ID:         packageID,
-		Definition: PackageDefinition{Name: "hello"},
+		Definition: pkggraph.Definition{Name: "hello", Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone}},
 	}), "[hello aaaaaaaa] "; got != want {
 		t.Fatalf("named prefix = %q, want %q", got, want)
 	}

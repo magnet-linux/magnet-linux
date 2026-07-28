@@ -6,7 +6,7 @@ local build_policy = {
 
 local bootstrap_seed = build_policy + {
   name: 'bootstrap-seed',
-  build: 'untar',
+  build: { kind: 'unpack' },
   runDeps: [],
   buildDeps: [],
   fetch: [
@@ -24,7 +24,7 @@ local bootstrap_seed = build_policy + {
 // can provide a different layout without teaching the store about it.
 local root_layout = build_policy + {
   name: 'root-layout',
-  build: |||
+  build: { kind: 'script', script: |||
     mkdir -p \
       /out/bin \
       /out/boot \
@@ -48,7 +48,7 @@ local root_layout = build_policy + {
     # Relative links remain inside an extracted package root.
     ln -s . /out/usr
     ln -s bin /out/sbin
-  |||,
+  ||| },
   runDeps: [],
   buildDeps: [bootstrap_seed],
   fetch: [],
@@ -59,7 +59,7 @@ local root_layout = build_policy + {
 // dependency and can evolve independently from the tool payload.
 local bootstrap_tools = build_policy + {
   name: 'bootstrap-tools',
-  build: |||
+  build: { kind: 'script', script: |||
     copy_into() {
       source="$1"
       destination="$2"
@@ -82,7 +82,7 @@ local bootstrap_tools = build_policy + {
     copy_into /etc /out/etc
     copy_into /x86_64-linux-musl /out/x86_64-linux-musl
     cp -a /linuxrc /out/linuxrc
-  |||,
+  ||| },
   runDeps: [],
   buildDeps: [bootstrap_seed],
   fetch: [],
@@ -92,7 +92,7 @@ local bootstrap_tools = build_policy + {
 // closure installs the layout first and then the normalized bootstrap tools.
 local bootstrap = build_policy + {
   name: 'bootstrap',
-  build: '',
+  build: { kind: 'none' },
   runDeps: [root_layout, bootstrap_tools],
   buildDeps: [root_layout, bootstrap_tools],
   fetch: [],

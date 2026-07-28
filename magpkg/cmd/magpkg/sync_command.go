@@ -7,6 +7,7 @@ import (
 	"io"
 	"runtime"
 
+	graphjsonnet "github.com/andrewchambers/magnet-linux/magpkg/pkggraph/jsonnet"
 	"github.com/andrewchambers/magnet-linux/magpkg/pkgstore"
 	"github.com/spf13/pflag"
 )
@@ -24,6 +25,16 @@ func runSync(
 		"",
 		"package store path (default: $MAGPKG_STORE or ~/.magpkg/store)",
 	)
+	binaryCache := flags.String(
+		"binary-cache",
+		"",
+		"binary cache URL (default: $MAGPKG_BINARY_CACHE)",
+	)
+	cacheOnly := flags.Bool(
+		"cache-only",
+		false,
+		"permit cached artifacts but prohibit local package builds",
+	)
 	destination := flags.String(
 		"dest",
 		"",
@@ -39,6 +50,11 @@ func runSync(
 		"dry-run",
 		false,
 		"plan and verify the synchronization without changing managed files",
+	)
+	noBuild := flags.Bool(
+		"no-build",
+		false,
+		"require package artifacts to exist instead of building missing ones",
 	)
 	force := flags.Bool(
 		"force",
@@ -113,6 +129,9 @@ func runSync(
 	if *deleteUnmanaged && !*force {
 		return errors.New("--delete-unmanaged requires --force")
 	}
+	if *noBuild && *cacheOnly {
+		return errors.New("--no-build and --cache-only are mutually exclusive")
+	}
 
 	positional := flags.Args()
 	jsonnetFile := *jsonnetFileFlag
@@ -132,7 +151,14 @@ func runSync(
 	if err != nil {
 		return err
 	}
-	store, err := pkgstore.Open(storePath)
+	cacheURL := ""
+	if !*noBuild {
+		cacheURL = resolveBinaryCacheURL(*binaryCache)
+	}
+	store, err := pkgstore.OpenWithOptions(
+		storePath,
+		commandStoreOpenOptions(cacheURL),
+	)
 	if err != nil {
 		return fmt.Errorf(
 			"open store %q (run `magpkg init` first): %w",
@@ -140,10 +166,10 @@ func runSync(
 			err,
 		)
 	}
-	graph, err := pkgstore.PackageGraphFromJsonnetWithOptions(
+	graph, err := graphjsonnet.EvaluateFile(
 		ctx,
 		jsonnetFile,
-		pkgstore.JsonnetOptions{ExtVars: extStrings},
+		graphjsonnet.Options{ExtVars: extStrings},
 	)
 	if err != nil {
 		return err
@@ -153,23 +179,26 @@ func runSync(
 		return err
 	}
 
-	fetchProgress := newFetchProgressRenderer(ctx, stderr)
-	_, buildErr := store.BuildPackagesWithOptions(
-		ctx,
-		graph,
-		rootIDs,
-		pkgstore.BuildOptions{
-			Jobs:             *jobs,
-			FetchJobs:        *fetchJobs,
-			BuildParallelism: *parallelism,
-			Stdout:           stderr,
-			Stderr:           stderr,
-			FetchProgress:    fetchProgress.Report,
-		},
-	)
-	fetchProgress.Finish()
-	if buildErr != nil {
-		return buildErr
+	if !*noBuild {
+		fetchProgress := newFetchProgressRenderer(ctx, stderr)
+		_, buildErr := store.BuildPackagesWithOptions(
+			ctx,
+			graph,
+			rootIDs,
+			pkgstore.BuildOptions{
+				CacheOnly:        *cacheOnly,
+				Jobs:             *jobs,
+				FetchJobs:        *fetchJobs,
+				BuildParallelism: *parallelism,
+				Stdout:           stderr,
+				Stderr:           stderr,
+				FetchProgress:    fetchProgress.Report,
+			},
+		)
+		fetchProgress.Finish()
+		if buildErr != nil {
+			return buildErr
+		}
 	}
 
 	result, err := store.Sync(
@@ -186,11 +215,11 @@ func runSync(
 	if err != nil {
 		return err
 	}
-	writeSyncChanges(stdout, result)
+	writeDestinationChanges(stdout, result)
 	return nil
 }
 
-func writeSyncChanges(writer io.Writer, result *pkgstore.SyncResult) {
+func writeDestinationChanges(writer io.Writer, result *pkgstore.DestinationResult) {
 	if result == nil {
 		return
 	}

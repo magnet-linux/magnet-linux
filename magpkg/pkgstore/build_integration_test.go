@@ -6,11 +6,20 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"io"
 	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
+)
+
+var testBootstrapSandbox = flag.Bool(
+	"magpkg-test-bootstrap",
+	false,
+	"run the bootstrap sandbox integration test",
 )
 
 func TestBuildUntarPackage(t *testing.T) {
@@ -27,10 +36,10 @@ func TestBuildUntarPackage(t *testing.T) {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256(archiveContents)
-	definition := PackageDefinition{
+	definition := pkggraph.Definition{
 		Name:  "bootstrap",
-		Build: "untar",
-		Fetch: []Fetch{{
+		Build: pkggraph.BuildSpec{Kind: pkggraph.BuildUnpack},
+		Fetch: []pkggraph.Fetch{{
 			Filename: "source.tar.zst",
 			SHA256:   hex.EncodeToString(digest[:]),
 			URLs: []string{(&url.URL{
@@ -39,10 +48,10 @@ func TestBuildUntarPackage(t *testing.T) {
 			}).String()},
 		}},
 	}
-	packageID := testPackageID(t, definition)
-	graph := &PackageGraph{
-		Nodes: map[PackageID]PackageDefinition{packageID: definition},
-		Roots: map[string]PackageID{"bootstrap": packageID},
+	packageID := testID(t, definition)
+	graph := &pkggraph.Graph{
+		Nodes: map[pkggraph.ID]pkggraph.Definition{packageID: definition},
+		Roots: map[string]pkggraph.ID{"bootstrap": packageID},
 	}
 	store := openTestStore(t)
 
@@ -68,8 +77,8 @@ func TestBuildUntarPackage(t *testing.T) {
 }
 
 func TestBuildInsideBootstrapSandbox(t *testing.T) {
-	if os.Getenv("MAGPKG_TEST_BOOTSTRAP") == "" {
-		t.Skip("set MAGPKG_TEST_BOOTSTRAP=1 to run the bootstrap sandbox integration test")
+	if !*testBootstrapSandbox {
+		t.Skip("pass -magpkg-test-bootstrap to run the bootstrap sandbox integration test")
 	}
 	bootstrapArchive, err := filepath.Abs(
 		filepath.Join("..", "..", "bootstrap", "out", "bootstrap.tar.zst"),
@@ -85,10 +94,10 @@ func TestBuildInsideBootstrapSandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	bootstrapDefinition := PackageDefinition{
+	bootstrapDefinition := pkggraph.Definition{
 		Name:  "bootstrap",
-		Build: "untar",
-		Fetch: []Fetch{{
+		Build: pkggraph.BuildSpec{Kind: pkggraph.BuildUnpack},
+		Fetch: []pkggraph.Fetch{{
 			Filename: "bootstrap.tar.zst",
 			SHA256:   hex.EncodeToString(bootstrapDigest[:]),
 			URLs: []string{(&url.URL{
@@ -97,30 +106,33 @@ func TestBuildInsideBootstrapSandbox(t *testing.T) {
 			}).String()},
 		}},
 	}
-	bootstrapID := testPackageID(t, bootstrapDefinition)
-	helloDefinition := PackageDefinition{
+	bootstrapID := testID(t, bootstrapDefinition)
+	helloDefinition := pkggraph.Definition{
 		Name: "hello",
-		Build: "" +
-			"test \"$PATH\" = /bin\n" +
-			"test \"$HOME\" = /build\n" +
-			"test \"$MAGPKG_TEST_VALUE\" = 'custom value'\n" +
-			"test \"$BUILD_PARALLELISM\" = 3\n" +
-			"printf 'hello on stdout\\n'\n" +
-			"printf 'hello on stderr\\n' >&2\n" +
-			"printf 'built inside bootstrap\\n' > /out/hello\n",
+		Build: pkggraph.BuildSpec{
+			Kind: pkggraph.BuildScript,
+			Script: "" +
+				"test \"$PATH\" = /bin\n" +
+				"test \"$HOME\" = /build\n" +
+				"test \"$MAGPKG_TEST_VALUE\" = 'custom value'\n" +
+				"test \"$BUILD_PARALLELISM\" = 3\n" +
+				"printf 'hello on stdout\\n'\n" +
+				"printf 'hello on stderr\\n' >&2\n" +
+				"printf 'built inside bootstrap\\n' > /out/hello\n",
+		},
 		BuildEnv: map[string]string{
 			"PATH":              "/bin",
 			"MAGPKG_TEST_VALUE": "custom value",
 		},
-		BuildDeps: []PackageID{bootstrapID},
+		BuildDeps: []pkggraph.ID{bootstrapID},
 	}
-	helloID := testPackageID(t, helloDefinition)
-	graph := &PackageGraph{
-		Nodes: map[PackageID]PackageDefinition{
+	helloID := testID(t, helloDefinition)
+	graph := &pkggraph.Graph{
+		Nodes: map[pkggraph.ID]pkggraph.Definition{
 			bootstrapID: bootstrapDefinition,
 			helloID:     helloDefinition,
 		},
-		Roots: map[string]PackageID{"hello": helloID},
+		Roots: map[string]pkggraph.ID{"hello": helloID},
 	}
 	store := openTestStore(t)
 	var stdout bytes.Buffer

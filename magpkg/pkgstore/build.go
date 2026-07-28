@@ -10,17 +10,24 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
 )
 
-// Package describes a package artifact produced in the store.
-type Package struct {
-	ID        PackageID
+// Artifact describes a package artifact available in the store.
+type Artifact struct {
+	ID        pkggraph.ID
 	Name      string
 	StorePath string
 }
 
-// BuildOptions controls execution of a BuildPlan.
+// BuildOptions controls complete package realization through local artifacts,
+// binary-cache substitution, source fetching, and local builds.
 type BuildOptions struct {
+	// CacheOnly permits existing local artifacts and binary-cache
+	// substitutions but prohibits source fetching and local package builds.
+	CacheOnly bool
+
 	// Jobs is the maximum number of package builds performed concurrently by
 	// this process. Zero selects one job.
 	Jobs int
@@ -42,7 +49,23 @@ type BuildOptions struct {
 	FetchProgress FetchProgressFunc
 }
 
-type normalizedBuildOptions struct {
+// ExecuteOptions controls execution of an already-fetched BuildPlan.
+type ExecuteOptions struct {
+	// Jobs is the maximum number of package builds performed concurrently.
+	// Zero selects one job.
+	Jobs int
+
+	// BuildParallelism is exposed to package scripts as BUILD_PARALLELISM.
+	// Zero selects one.
+	BuildParallelism int
+
+	// Stdout and Stderr receive line-prefixed package build output. Nil uses
+	// the process standard output or standard error.
+	Stdout io.Writer
+	Stderr io.Writer
+}
+
+type normalizedExecuteOptions struct {
 	jobs             int
 	buildParallelism int
 	stdout           io.Writer
@@ -50,13 +73,13 @@ type normalizedBuildOptions struct {
 	outputMutex      *sync.Mutex
 }
 
-// Build plans, fetches, and builds packageID and its dependencies using one
-// local package-build job.
+// Build realizes packageID and its dependencies using binary-cache
+// substitution when configured and one local package-build job when needed.
 func (s *Store) Build(
 	ctx context.Context,
-	graph *PackageGraph,
-	packageID PackageID,
-) (*Package, error) {
+	graph *pkggraph.Graph,
+	packageID pkggraph.ID,
+) (*Artifact, error) {
 	packages, err := s.BuildPackages(ctx, graph, packageID)
 	if err != nil {
 		return nil, err
@@ -64,17 +87,17 @@ func (s *Store) Build(
 	return packages[0], nil
 }
 
-// BuildWithOptions plans, fetches, and builds packageID and its dependencies.
+// BuildWithOptions realizes packageID and its dependencies with options.
 func (s *Store) BuildWithOptions(
 	ctx context.Context,
-	graph *PackageGraph,
-	packageID PackageID,
+	graph *pkggraph.Graph,
+	packageID pkggraph.ID,
 	options BuildOptions,
-) (*Package, error) {
+) (*Artifact, error) {
 	packages, err := s.BuildPackagesWithOptions(
 		ctx,
 		graph,
-		[]PackageID{packageID},
+		[]pkggraph.ID{packageID},
 		options,
 	)
 	if err != nil {
@@ -83,13 +106,13 @@ func (s *Store) BuildWithOptions(
 	return packages[0], nil
 }
 
-// BuildPackages plans, fetches, and builds packageIDs and their dependencies.
-// Returned packages are ordered like the deduplicated input roots.
+// BuildPackages realizes packageIDs and their dependencies. Returned packages
+// are ordered like the deduplicated input roots.
 func (s *Store) BuildPackages(
 	ctx context.Context,
-	graph *PackageGraph,
-	packageIDs ...PackageID,
-) ([]*Package, error) {
+	graph *pkggraph.Graph,
+	packageIDs ...pkggraph.ID,
+) ([]*Artifact, error) {
 	return s.BuildPackagesWithOptions(
 		ctx,
 		graph,
@@ -98,16 +121,38 @@ func (s *Store) BuildPackages(
 	)
 }
 
-// BuildPackagesWithOptions is BuildPackages with build and fetch controls.
+// BuildPackagesWithOptions is BuildPackages with realization controls.
 func (s *Store) BuildPackagesWithOptions(
 	ctx context.Context,
-	graph *PackageGraph,
-	packageIDs []PackageID,
+	graph *pkggraph.Graph,
+	packageIDs []pkggraph.ID,
 	options BuildOptions,
-) ([]*Package, error) {
+) ([]*Artifact, error) {
+	if err := validateBuildOptions(options); err != nil {
+		return nil, err
+	}
+	if err := s.substituteBuildClosure(
+		ctx,
+		graph,
+		packageIDs,
+		options.CacheOnly,
+	); err != nil {
+		return nil, err
+	}
 	plan, err := s.PlanBuild(ctx, graph, packageIDs...)
 	if err != nil {
 		return nil, err
+	}
+	if options.CacheOnly {
+		for _, planned := range plan.packages {
+			if planned.Disposition == BuildDispositionNeedsBuild {
+				return nil, fmt.Errorf(
+					"pkgstore: package %s still requires a local build "+
+						"after cache-only substitution",
+					planned.ID,
+				)
+			}
+		}
 	}
 	if err := s.FetchBuildInputsWithOptions(ctx, plan, FetchInputsOptions{
 		Jobs:     options.FetchJobs,
@@ -115,12 +160,16 @@ func (s *Store) BuildPackagesWithOptions(
 	}); err != nil {
 		return nil, err
 	}
-	packages, err := s.ExecuteBuildPlan(ctx, plan, options)
+	packages, err := s.ExecuteBuildPlan(
+		ctx,
+		plan,
+		executeOptionsFromBuildOptions(options),
+	)
 	if err != nil {
 		return nil, err
 	}
-	roots := make([]*Package, 0, len(plan.Roots))
-	for _, packageID := range plan.Roots {
+	roots := make([]*Artifact, 0, len(plan.roots))
+	for _, packageID := range plan.roots {
 		pkg, ok := packages[packageID]
 		if !ok {
 			return nil, fmt.Errorf(
@@ -140,9 +189,9 @@ func (s *Store) BuildPackagesWithOptions(
 func (s *Store) ExecuteBuildPlan(
 	ctx context.Context,
 	plan *BuildPlan,
-	options BuildOptions,
-) (map[PackageID]*Package, error) {
-	normalized, err := normalizeBuildOptions(options)
+	options ExecuteOptions,
+) (map[pkggraph.ID]*Artifact, error) {
+	normalized, err := normalizeExecuteOptions(options)
 	if err != nil {
 		return nil, err
 	}
@@ -153,27 +202,27 @@ type plannedPackageBuilder func(
 	context.Context,
 	*BuildPlan,
 	PlannedPackage,
-	normalizedBuildOptions,
+	normalizedExecuteOptions,
 ) error
 
 type buildResult struct {
-	packageID PackageID
+	packageID pkggraph.ID
 	err       error
 }
 
 func (s *Store) executeBuildPlan(
 	ctx context.Context,
 	plan *BuildPlan,
-	options normalizedBuildOptions,
+	options normalizedExecuteOptions,
 	builder plannedPackageBuilder,
-) (map[PackageID]*Package, error) {
+) (map[pkggraph.ID]*Artifact, error) {
 	if err := validateStore(s); err != nil {
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := validateBuildPlan(plan); err != nil {
+	if err := validateBuildPlanForStore(s, plan); err != nil {
 		return nil, err
 	}
 	for _, directory := range []string{
@@ -189,13 +238,13 @@ func (s *Store) executeBuildPlan(
 	executionContext, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	pending := make(map[PackageID]struct{}, len(plan.Packages))
-	plannedByID := make(map[PackageID]PlannedPackage, len(plan.Packages))
-	for _, planned := range plan.Packages {
+	pending := make(map[pkggraph.ID]struct{}, len(plan.packages))
+	plannedByID := make(map[pkggraph.ID]PlannedPackage, len(plan.packages))
+	for _, planned := range plan.packages {
 		pending[planned.ID] = struct{}{}
 		plannedByID[planned.ID] = planned
 	}
-	active := make(map[PackageID]struct{})
+	active := make(map[pkggraph.ID]struct{})
 	results := make(chan buildResult, options.jobs)
 	var firstErr error
 
@@ -225,7 +274,7 @@ func (s *Store) executeBuildPlan(
 		}
 
 		progress := false
-		for _, planned := range plan.Packages {
+		for _, planned := range plan.packages {
 			if len(active) >= options.jobs {
 				break
 			}
@@ -359,8 +408,8 @@ func (s *Store) executeBuildPlan(
 		}
 	}
 
-	packages := make(map[PackageID]*Package, len(plan.Packages))
-	for _, planned := range plan.Packages {
+	packages := make(map[pkggraph.ID]*Artifact, len(plan.packages))
+	for _, planned := range plan.packages {
 		available, err := s.packageAvailable(
 			planned.ID,
 			planned.Definition.Name,
@@ -374,7 +423,7 @@ func (s *Store) executeBuildPlan(
 				planned.ID,
 			)
 		}
-		packages[planned.ID] = &Package{
+		packages[planned.ID] = &Artifact{
 			ID:   planned.ID,
 			Name: planned.Definition.Name,
 			StorePath: s.packageArtifactPath(
@@ -388,7 +437,7 @@ func (s *Store) executeBuildPlan(
 
 func (s *Store) prerequisitesAvailable(
 	planned PlannedPackage,
-	plannedByID map[PackageID]PlannedPackage,
+	plannedByID map[pkggraph.ID]PlannedPackage,
 ) (bool, error) {
 	for _, dependency := range planned.Prerequisites {
 		dependencyPlan, ok := plannedByID[dependency]
@@ -413,12 +462,12 @@ func (s *Store) prerequisitesAvailable(
 	return true, nil
 }
 
-func normalizeBuildOptions(options BuildOptions) (normalizedBuildOptions, error) {
+func normalizeExecuteOptions(options ExecuteOptions) (normalizedExecuteOptions, error) {
 	if options.Jobs < 0 {
-		return normalizedBuildOptions{}, errors.New("pkgstore: build jobs must not be negative")
+		return normalizedExecuteOptions{}, errors.New("pkgstore: build jobs must not be negative")
 	}
 	if options.BuildParallelism < 0 {
-		return normalizedBuildOptions{}, errors.New(
+		return normalizedExecuteOptions{}, errors.New(
 			"pkgstore: build parallelism must not be negative",
 		)
 	}
@@ -434,7 +483,7 @@ func normalizeBuildOptions(options BuildOptions) (normalizedBuildOptions, error)
 	if options.Stderr == nil {
 		options.Stderr = os.Stderr
 	}
-	return normalizedBuildOptions{
+	return normalizedExecuteOptions{
 		jobs:             options.Jobs,
 		buildParallelism: options.BuildParallelism,
 		stdout:           options.Stdout,
@@ -443,11 +492,28 @@ func normalizeBuildOptions(options BuildOptions) (normalizedBuildOptions, error)
 	}, nil
 }
 
+func validateBuildOptions(options BuildOptions) error {
+	if options.FetchJobs < 0 {
+		return errors.New("pkgstore: fetch jobs must not be negative")
+	}
+	_, err := normalizeExecuteOptions(executeOptionsFromBuildOptions(options))
+	return err
+}
+
+func executeOptionsFromBuildOptions(options BuildOptions) ExecuteOptions {
+	return ExecuteOptions{
+		Jobs:             options.Jobs,
+		BuildParallelism: options.BuildParallelism,
+		Stdout:           options.Stdout,
+		Stderr:           options.Stderr,
+	}
+}
+
 func (s *Store) buildPlannedPackage(
 	ctx context.Context,
 	plan *BuildPlan,
 	planned PlannedPackage,
-	options normalizedBuildOptions,
+	options normalizedExecuteOptions,
 ) error {
 	workRoot := s.packageWorkPath(planned.ID)
 	if err := os.RemoveAll(workRoot); err != nil {
@@ -477,7 +543,7 @@ func (s *Store) buildPlannedPackage(
 		sources[index] = fetchedPath
 	}
 
-	if planned.Definition.Build == "untar" {
+	if planned.Definition.Build.Kind == pkggraph.BuildUnpack {
 		for index, sourcePath := range sources {
 			if err := extractArchive(ctx, sourcePath, outputDirectory); err != nil {
 				return fmt.Errorf(
@@ -504,7 +570,7 @@ func (s *Store) buildPlannedPackage(
 				)
 			}
 		}
-		if planned.Definition.Build != "" {
+		if planned.Definition.Build.Kind == pkggraph.BuildScript {
 			outputMutex := options.outputMutex
 			if outputMutex == nil {
 				outputMutex = &sync.Mutex{}
@@ -521,7 +587,7 @@ func (s *Store) buildPlannedPackage(
 				buildDirectory,
 				outputDirectory,
 				fetchDirectory,
-				planned.Definition.Build,
+				planned.Definition.Build.Script,
 				planned.Definition.BuildEnv,
 				buildOptions,
 			)
@@ -570,8 +636,8 @@ func (s *Store) materializeBuildRoot(
 	if err != nil {
 		return err
 	}
-	byID := make(map[PackageID]PlannedPackage, len(plan.Packages))
-	for _, item := range plan.Packages {
+	byID := make(map[pkggraph.ID]PlannedPackage, len(plan.packages))
+	for _, item := range plan.packages {
 		byID[item.ID] = item
 	}
 	for _, dependency := range order {
@@ -603,15 +669,15 @@ func (s *Store) materializeBuildRoot(
 	return nil
 }
 
-func runtimeInstallOrder(plan *BuildPlan, planned PlannedPackage) ([]PackageID, error) {
-	byID := make(map[PackageID]PlannedPackage, len(plan.Packages))
-	for _, item := range plan.Packages {
+func runtimeInstallOrder(plan *BuildPlan, planned PlannedPackage) ([]pkggraph.ID, error) {
+	byID := make(map[pkggraph.ID]PlannedPackage, len(plan.packages))
+	for _, item := range plan.packages {
 		byID[item.ID] = item
 	}
-	state := make(map[PackageID]visitState)
-	var order []PackageID
-	var visit func(PackageID) error
-	visit = func(packageID PackageID) error {
+	state := make(map[pkggraph.ID]visitState)
+	var order []pkggraph.ID
+	var visit func(pkggraph.ID) error
+	visit = func(packageID pkggraph.ID) error {
 		switch state[packageID] {
 		case visitActive:
 			return fmt.Errorf("runtime dependency cycle through package %s", packageID)
@@ -636,7 +702,7 @@ func runtimeInstallOrder(plan *BuildPlan, planned PlannedPackage) ([]PackageID, 
 	// then fill out the target closure without allowing a bootstrap build root
 	// to overwrite a rebuilt toolchain that appears later in BuildDeps.
 	for _, packageID := range append(
-		append([]PackageID(nil), planned.Definition.BuildDeps...),
+		append([]pkggraph.ID(nil), planned.Definition.BuildDeps...),
 		planned.Definition.RunDeps...,
 	) {
 		if err := visit(packageID); err != nil {
@@ -677,6 +743,6 @@ func copyRegularFile(
 	return nil
 }
 
-func buildParallelismValue(options normalizedBuildOptions) string {
+func buildParallelismValue(options normalizedExecuteOptions) string {
 	return strconv.Itoa(options.buildParallelism)
 }

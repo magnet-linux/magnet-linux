@@ -1,4 +1,4 @@
-package pkgstore
+package pkggraph
 
 import (
 	"errors"
@@ -30,6 +30,12 @@ func resolveBuildEnvironment(overrides map[string]string) map[string]string {
 		environment[name] = value
 	}
 	return environment
+}
+
+// ResolveBuildEnvironment returns a new map containing the deterministic
+// defaults overlaid with overrides.
+func ResolveBuildEnvironment(overrides map[string]string) map[string]string {
+	return resolveBuildEnvironment(overrides)
 }
 
 func validateBuildEnvironment(environment map[string]string) error {

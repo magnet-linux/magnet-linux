@@ -10,7 +10,7 @@ local build_policy = {
 
 local make = build_policy + {
   name: 'make',
-  build: |||
+  build: { kind: 'script', script: |||
     tar -xzf /fetch/make-4.4.1.tar.gz
     cd make-4.4.1
 
@@ -26,7 +26,7 @@ local make = build_policy + {
     make DESTDIR=/out install
 
     rm -f /out/share/info/dir
-  |||,
+  ||| },
   runDeps: runtime([]),
   buildDeps: [bootstrap],
   fetch: [
@@ -40,7 +40,7 @@ local make = build_policy + {
 
 local musl = build_policy + {
   name: 'musl',
-  build: |||
+  build: { kind: 'script', script: |||
     tar -xzf /fetch/musl-1.2.6.tar.gz
     cd musl-1.2.6
 
@@ -53,7 +53,7 @@ local musl = build_policy + {
 
     make -j"${BUILD_PARALLELISM}"
     make DESTDIR=/out install
-  |||,
+  ||| },
   runDeps: runtime([]),
   buildDeps: [bootstrap, make],
   fetch: [
@@ -67,11 +67,11 @@ local musl = build_policy + {
 
 local musl_rt = build_policy + {
   name: 'musl-rt',
-  build: |||
+  build: { kind: 'script', script: |||
     mkdir -p /out/lib
     cp -a /lib/libc.so /out/lib/
     cp -a /lib/ld-musl-x86_64.so.1 /out/lib/
-  |||,
+  ||| },
   runDeps: runtime([]),
   buildDeps: [bootstrap, musl],
   fetch: [],
@@ -79,7 +79,7 @@ local musl_rt = build_policy + {
 
 local binutils = build_policy + {
   name: 'binutils',
-  build: |||
+  build: { kind: 'script', script: |||
     tar -xzf /fetch/binutils-2.44.tar.gz
     cd binutils-2.44
     mkdir build
@@ -98,7 +98,7 @@ local binutils = build_policy + {
     make -j"${BUILD_PARALLELISM}"
     make DESTDIR=/out install
     rm -f /out/share/info/dir
-  |||,
+  ||| },
   runDeps: runtime([musl_rt]),
   buildDeps: [bootstrap, make, musl],
   fetch: [
@@ -112,7 +112,7 @@ local binutils = build_policy + {
 
 local gcc = build_policy + {
   name: 'gcc',
-  build: |||
+  build: { kind: 'script', script: |||
     tar -xJf /fetch/gcc-15.1.0.tar.xz
     cd gcc-15.1.0
 
@@ -154,7 +154,7 @@ local gcc = build_policy + {
     make -j"${BUILD_PARALLELISM}"
     make DESTDIR=/out install
     rm -f /out/share/info/dir
-  |||,
+  ||| },
   runDeps: runtime([binutils, musl]),
   buildDeps: [bootstrap, make, binutils, musl],
   fetch: [
@@ -185,7 +185,7 @@ local toolchain = [bootstrap, make, binutils, gcc, musl];
 
 local coreutils = build_policy + {
   name: 'coreutils',
-  build: |||
+  build: { kind: 'script', script: |||
     tar -xJf /fetch/coreutils-9.4.tar.xz
     cd coreutils-9.4
 
@@ -200,7 +200,7 @@ local coreutils = build_policy + {
     make -j"${BUILD_PARALLELISM}"
     make DESTDIR=/out install
     rm -f /out/share/info/dir
-  |||,
+  ||| },
   runDeps: runtime([musl_rt]),
   buildDeps: toolchain,
   fetch: [
@@ -214,7 +214,7 @@ local coreutils = build_policy + {
 
 local gawk = build_policy + {
   name: 'gawk',
-  build: |||
+  build: { kind: 'script', script: |||
     tar -xJf /fetch/gawk-5.3.2.tar.xz
     cd gawk-5.3.2
 
@@ -229,7 +229,7 @@ local gawk = build_policy + {
     make -j"${BUILD_PARALLELISM}"
     make DESTDIR=/out install
     rm -f /out/share/info/dir
-  |||,
+  ||| },
   runDeps: runtime([musl_rt]),
   buildDeps: toolchain,
   fetch: [
@@ -243,7 +243,7 @@ local gawk = build_policy + {
 
 local sed = build_policy + {
   name: 'sed',
-  build: |||
+  build: { kind: 'script', script: |||
     tar -xJf /fetch/sed-4.9.tar.xz
     cd sed-4.9
 
@@ -256,7 +256,7 @@ local sed = build_policy + {
     make -j"${BUILD_PARALLELISM}"
     make DESTDIR=/out install
     rm -f /out/share/info/dir
-  |||,
+  ||| },
   runDeps: runtime([musl_rt]),
   buildDeps: toolchain,
   fetch: [
@@ -272,7 +272,7 @@ local stage2Tools = toolchain + [coreutils, gawk, sed];
 
 local findutils = build_policy + {
   name: 'findutils',
-  build: |||
+  build: { kind: 'script', script: |||
     tar -xJf /fetch/findutils-4.10.0.tar.xz
     cd findutils-4.10.0
 
@@ -286,7 +286,7 @@ local findutils = build_policy + {
     make -j"${BUILD_PARALLELISM}"
     make DESTDIR=/out install
     rm -f /out/share/info/dir
-  |||,
+  ||| },
   runDeps: runtime([musl_rt]),
   buildDeps: stage2Tools,
   fetch: [
@@ -300,7 +300,7 @@ local findutils = build_policy + {
 
 local diffutils = build_policy + {
   name: 'diffutils',
-  build: |||
+  build: { kind: 'script', script: |||
     tar -xJf /fetch/diffutils-3.12.tar.xz
     cd diffutils-3.12
 
@@ -313,7 +313,7 @@ local diffutils = build_policy + {
     make -j"${BUILD_PARALLELISM}"
     make DESTDIR=/out install
     rm -f /out/share/info/dir
-  |||,
+  ||| },
   runDeps: runtime([musl_rt]),
   buildDeps: stage2Tools,
   fetch: [
@@ -327,7 +327,7 @@ local diffutils = build_policy + {
 
 local pkgconfig = build_policy + {
   name: 'pkgconfig',
-  build: |||
+  build: { kind: 'script', script: |||
     tar -xzf /fetch/pkg-config-0.29.2.tar.gz
     cd pkg-config-0.29.2
 
@@ -342,7 +342,7 @@ local pkgconfig = build_policy + {
     make -j"${BUILD_PARALLELISM}"
     make DESTDIR=/out install
     rm -f /out/share/info/dir
-  |||,
+  ||| },
   runDeps: runtime([musl_rt]),
   buildDeps: toolchain,
   fetch: [
@@ -356,7 +356,7 @@ local pkgconfig = build_policy + {
 
 local bash = build_policy + {
   name: 'bash',
-  build: |||
+  build: { kind: 'script', script: |||
     tar -xzf /fetch/bash-5.2.37.tar.gz
     cd bash-5.2.37
 
@@ -373,7 +373,7 @@ local bash = build_policy + {
     make DESTDIR=/out install
     rm -f /out/share/info/dir
     ln -s bash /out/bin/sh
-  |||,
+  ||| },
   runDeps: runtime([musl_rt]),
   buildDeps: stage2Tools,
   fetch: [
@@ -387,7 +387,7 @@ local bash = build_policy + {
 
 local gzip = build_policy + {
   name: 'gzip',
-  build: |||
+  build: { kind: 'script', script: |||
     tar -xJf /fetch/gzip-1.13.tar.xz
     cd gzip-1.13
 
@@ -400,7 +400,7 @@ local gzip = build_policy + {
     make -j"${BUILD_PARALLELISM}"
     make DESTDIR=/out install
     rm -f /out/share/info/dir
-  |||,
+  ||| },
   runDeps: runtime([musl_rt]),
   buildDeps: toolchain,
   fetch: [
@@ -414,7 +414,7 @@ local gzip = build_policy + {
 
 local xz = build_policy + {
   name: 'xz',
-  build: |||
+  build: { kind: 'script', script: |||
     tar -xJf /fetch/xz-5.4.6.tar.xz
     cd xz-5.4.6
 
@@ -429,7 +429,7 @@ local xz = build_policy + {
     make -j"${BUILD_PARALLELISM}"
     make DESTDIR=/out install
     rm -f /out/share/info/dir
-  |||,
+  ||| },
   runDeps: runtime([musl_rt]),
   buildDeps: toolchain,
   fetch: [
@@ -446,7 +446,7 @@ local xz = build_policy + {
 
 local tar = build_policy + {
   name: 'tar',
-  build: |||
+  build: { kind: 'script', script: |||
     tar -xJf /fetch/tar-1.35.tar.xz
     cd tar-1.35
 
@@ -460,7 +460,7 @@ local tar = build_policy + {
     make -j"${BUILD_PARALLELISM}"
     make DESTDIR=/out install
     rm -f /out/share/info/dir
-  |||,
+  ||| },
   runDeps: runtime([musl_rt, xz, gzip]),
   buildDeps: toolchain + [pkgconfig, xz],
   fetch: [
@@ -474,7 +474,7 @@ local tar = build_policy + {
 
 local grep = build_policy + {
   name: 'grep',
-  build: |||
+  build: { kind: 'script', script: |||
     tar -xJf /fetch/grep-3.11.tar.xz
     cd grep-3.11
 
@@ -488,7 +488,7 @@ local grep = build_policy + {
     make -j"${BUILD_PARALLELISM}"
     make DESTDIR=/out install
     rm -f /out/share/info/dir
-  |||,
+  ||| },
   runDeps: runtime([musl_rt]),
   buildDeps: toolchain + [tar, xz],
   fetch: [
@@ -502,12 +502,12 @@ local grep = build_policy + {
 
 local libgcc_rt = build_policy + {
   name: 'libgcc-rt',
-  build: |||
+  build: { kind: 'script', script: |||
     library="$(gcc -print-file-name=libgcc_s.so.1)"
     test -f "$library"
     mkdir -p /out/lib
     cp -a "$(dirname "$library")"/libgcc_s.so* /out/lib/
-  |||,
+  ||| },
   runDeps: runtime([musl_rt]),
   buildDeps: [bootstrap, gcc],
   fetch: [],
@@ -515,12 +515,12 @@ local libgcc_rt = build_policy + {
 
 local libstdcpp_rt = build_policy + {
   name: 'libstdcpp-rt',
-  build: |||
+  build: { kind: 'script', script: |||
     library="$(g++ -print-file-name=libstdc++.so.6)"
     test -f "$library"
     mkdir -p /out/lib
     cp -a "$(dirname "$library")"/libstdc++.so* /out/lib/
-  |||,
+  ||| },
   runDeps: runtime([musl_rt, libgcc_rt]),
   buildDeps: [bootstrap, gcc],
   fetch: [],

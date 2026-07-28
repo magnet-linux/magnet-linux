@@ -6,10 +6,10 @@ magpkg-store - package store layout, persistent artifacts, and transient state
 
 # DESCRIPTION
 
-The magpkg store contains verified source fetches, built package archives,
-advisory lock files, and temporary build workspaces. It is deliberately a
-filesystem-only store: there is no database, package index, dependency graph,
-or persisted package definition.
+The magpkg store contains version metadata, verified source fetches, built
+package archives, advisory lock files, and temporary build workspaces. It is
+deliberately a filesystem-only store: there is no database, package index,
+dependency graph, or persisted package definition.
 
 Package definitions and their dependency graph are materialized from Jsonnet
 when magpkg runs. The store records only the fetched and built results needed
@@ -23,9 +23,10 @@ The command-line tool resolves its store path in this order:
 - the *MAGPKG_STORE* environment variable
 - _$HOME/.magpkg/store_
 
-The Go package-store API accepts any explicit directory. *magpkg init* creates
-the store root if necessary. Subdirectories are created lazily by fetch, build,
-and cleanup operations.
+The Go package-store API accepts an explicitly initialized store. *magpkg init*
+creates the store root and version metadata if necessary. Opening an ordinary
+directory or a store with unsupported metadata fails. Subdirectories are
+created lazily by fetch, build, and cleanup operations.
 
 # LAYOUT
 
@@ -33,6 +34,7 @@ A populated store has this general layout:
 
 ```
 <store>/
+|-- .magpkg-store.json
 |-- fetch/
 |   |-- <sha256>
 |   |-- <sha256>.lock
@@ -48,8 +50,23 @@ A populated store has this general layout:
         |-- build/
         |-- output/
         |-- fetch/
-        `-- artifact.tar.zst
+        |-- artifact.tar.zst
+        `-- binary-cache-*.tmp
 ```
+
+_.magpkg-store.json_ identifies the directory as a magpkg store and records
+the store format version. Version 1 has this form:
+
+```
+{
+  "format": "magpkg-store",
+  "version": 1
+}
+```
+
+Initialization publishes this metadata atomically and is idempotent for an
+existing compatible store. Magpkg does not overwrite malformed or unsupported
+metadata.
 
 Here, *sha256* is a 64-character lowercase hexadecimal source digest and *id*
 is a 52-character lowercase Base32 package ID. Not every entry exists at once.
@@ -57,8 +74,9 @@ Files ending in _.tmp_, package workspaces, and workspace artifacts are
 transient.
 
 The store root and its standard subdirectories are created with mode 0755.
-Cached sources, final package archives, and lock files are initially created
-with mode 0600. All creation modes are subject to the process umask.
+Store metadata, cached sources, final package archives, and lock files are
+initially created with mode 0600. All creation modes are subject to the process
+umask.
 
 # FETCH CACHE
 
@@ -143,9 +161,10 @@ same plan without a central work queue.
 
 ## work/<id>
 
-One workspace is used for a locally built package. A builder holds the
-exclusive _locks/<id>.lock_ while using it. Before starting, it removes any
-workspace left by an earlier attempt.
+One workspace is used while locally building or downloading a package
+artifact. The operation holds the exclusive _locks/<id>.lock_ while using it.
+A local builder removes any workspace left by an earlier attempt before
+starting.
 
 The workspace normally contains:
 
@@ -168,20 +187,51 @@ The workspace normally contains:
 *artifact.tar.zst*
 	The completed but not yet published package archive.
 
+*binary-cache-\*.tmp*
+	A binary-cache response being downloaded and validated.
+
 After a successful build, _artifact.tar.zst_ is renamed into _packages/_,
 that directory is synchronized, and the workspace is removed. A failed or
 cancelled build leaves its workspace for inspection. The next attempt removes
-it before rebuilding.
+it before rebuilding. A successful binary-cache substitution also removes its
+workspace; failed downloads remove their temporary file.
 
 # PUBLICATION
 
 Source and package publication use a temporary file followed by a rename
 within the same store. The destination directory is synchronized after the
 rename. Readers check for the final regular file while holding the appropriate
-lock and never consume workspace artifacts or partial fetches.
+lock and never consume workspace artifacts or partial fetches. The binary-cache
+server instead opens the immutable artifact without following symlinks and
+holds that descriptor for the complete response.
 
 Publishing package output is idempotent under its package lock. If the final
 archive already exists, a second result is not substituted for it.
+
+# BINARY CACHE
+
+Build operations may be configured with a trusted binary-cache URL. For each
+missing package, magpkg first requests:
+
+```
+<base-url>/v1/packages/<artifact-filename>
+```
+
+An HTTP 404 is a cache miss. A successful response is written under the
+package lock, flushed, completely decoded and structurally validated as a safe
+tar.zst archive, and atomically published into _packages/_. Other HTTP
+responses, transport failures, and invalid archives are errors.
+
+Package IDs identify build definitions rather than output bytes. Structural
+validation detects malformed or truncated archives but does not authenticate
+their contents. Binary caches must therefore be trusted. Authentication,
+uploads, signatures, and multi-cache selection are not part of version 1.
+
+*magpkg serve-cache* exposes only completed package artifacts and protocol
+information. It holds each artifact open while serving, so cleanup may unlink
+the path without interrupting an active response. GET requests for existing
+artifacts refresh their access and modification times through the open file
+descriptor unless *--no-touch* is used. HEAD requests never refresh them.
 
 # CLEANUP
 
@@ -226,4 +276,5 @@ not be manually unlinked while magpkg processes are using the store.
 
 # SEE ALSO
 
-*magpkg*(1), *magpkg-package*(5)
+*magpkg*(1), *magpkg-build*(1), *magpkg-export*(1),
+*magpkg-serve-cache*(1), *magpkg-package*(5)

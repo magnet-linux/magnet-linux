@@ -7,11 +7,13 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/andrewchambers/magnet-linux/magpkg/pkggraph"
 )
 
 func TestExecutorSkipsBusyReadyBranch(t *testing.T) {
 	store := openTestStore(t)
-	plan, firstID, secondID := independentBranchPlan(t)
+	plan, firstID, secondID := independentBranchPlan(t, store)
 
 	if err := osMkdirBuildDirectories(store); err != nil {
 		t.Fatal(err)
@@ -27,7 +29,7 @@ func TestExecutorSkipsBusyReadyBranch(t *testing.T) {
 		_ context.Context,
 		_ *BuildPlan,
 		planned PlannedPackage,
-		_ normalizedBuildOptions,
+		_ normalizedExecuteOptions,
 	) error {
 		if planned.ID == secondID {
 			close(secondStarted)
@@ -42,7 +44,7 @@ func TestExecutorSkipsBusyReadyBranch(t *testing.T) {
 		_, err := store.executeBuildPlan(
 			ctx,
 			plan,
-			normalizedBuildOptions{jobs: 1},
+			normalizedExecuteOptions{jobs: 1},
 			builder,
 		)
 		done <- err
@@ -69,15 +71,15 @@ func TestExecutorSkipsBusyReadyBranch(t *testing.T) {
 
 func TestExecutorsSharePlanThroughPackageLocks(t *testing.T) {
 	store := openTestStore(t)
-	plan, _, _ := independentBranchPlan(t)
+	plan, _, _ := independentBranchPlan(t, store)
 
 	var mutex sync.Mutex
-	buildCounts := make(map[PackageID]int)
+	buildCounts := make(map[pkggraph.ID]int)
 	builder := func(
 		ctx context.Context,
 		_ *BuildPlan,
 		planned PlannedPackage,
-		_ normalizedBuildOptions,
+		_ normalizedExecuteOptions,
 	) error {
 		mutex.Lock()
 		buildCounts[planned.ID]++
@@ -98,7 +100,7 @@ func TestExecutorsSharePlanThroughPackageLocks(t *testing.T) {
 			_, err := store.executeBuildPlan(
 				context.Background(),
 				plan,
-				normalizedBuildOptions{jobs: 1},
+				normalizedExecuteOptions{jobs: 1},
 				builder,
 			)
 			errors <- err
@@ -111,7 +113,7 @@ func TestExecutorsSharePlanThroughPackageLocks(t *testing.T) {
 		}
 	}
 
-	for _, planned := range plan.Packages {
+	for _, planned := range plan.packages {
 		if buildCounts[planned.ID] != 1 {
 			t.Fatalf(
 				"package %s was built %d times, want exactly once",
@@ -124,15 +126,15 @@ func TestExecutorsSharePlanThroughPackageLocks(t *testing.T) {
 
 func TestExecutorRunsIndependentBranchesInParallel(t *testing.T) {
 	store := openTestStore(t)
-	plan, firstID, secondID := independentBranchPlan(t)
+	plan, firstID, secondID := independentBranchPlan(t, store)
 
-	started := make(chan PackageID, 2)
+	started := make(chan pkggraph.ID, 2)
 	release := make(chan struct{})
 	builder := func(
 		ctx context.Context,
 		_ *BuildPlan,
 		planned PlannedPackage,
-		_ normalizedBuildOptions,
+		_ normalizedExecuteOptions,
 	) error {
 		if planned.ID == firstID || planned.ID == secondID {
 			started <- planned.ID
@@ -152,13 +154,13 @@ func TestExecutorRunsIndependentBranchesInParallel(t *testing.T) {
 		_, err := store.executeBuildPlan(
 			ctx,
 			plan,
-			normalizedBuildOptions{jobs: 2},
+			normalizedExecuteOptions{jobs: 2},
 			builder,
 		)
 		done <- err
 	}()
 
-	seen := make(map[PackageID]bool)
+	seen := make(map[pkggraph.ID]bool)
 	for range 2 {
 		select {
 		case packageID := <-started:
@@ -180,37 +182,39 @@ func TestRuntimeInstallOrderAppliesBuildDependenciesBeforeRuntimeDependencies(
 	t *testing.T,
 ) {
 	bootstrap := PlannedPackage{
-		ID:         PackageID("bootstrap"),
-		Definition: PackageDefinition{Name: "bootstrap"},
+		ID:         pkggraph.ID("bootstrap"),
+		Definition: pkggraph.Definition{Name: "bootstrap", Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone}},
 	}
 	runtime := PlannedPackage{
-		ID:         PackageID("runtime"),
-		Definition: PackageDefinition{Name: "runtime"},
+		ID:         pkggraph.ID("runtime"),
+		Definition: pkggraph.Definition{Name: "runtime", Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone}},
 	}
 	toolchain := PlannedPackage{
-		ID: PackageID("toolchain"),
-		Definition: PackageDefinition{
+		ID: pkggraph.ID("toolchain"),
+		Definition: pkggraph.Definition{
 			Name:    "toolchain",
-			RunDeps: []PackageID{runtime.ID},
+			Build:   pkggraph.BuildSpec{Kind: pkggraph.BuildNone},
+			RunDeps: []pkggraph.ID{runtime.ID},
 		},
 	}
 	root := PlannedPackage{
-		ID: PackageID("root"),
-		Definition: PackageDefinition{
+		ID: pkggraph.ID("root"),
+		Definition: pkggraph.Definition{
 			Name:      "root",
-			BuildDeps: []PackageID{bootstrap.ID, toolchain.ID},
-			RunDeps:   []PackageID{runtime.ID},
+			Build:     pkggraph.BuildSpec{Kind: pkggraph.BuildNone},
+			BuildDeps: []pkggraph.ID{bootstrap.ID, toolchain.ID},
+			RunDeps:   []pkggraph.ID{runtime.ID},
 		},
 	}
 	plan := &BuildPlan{
-		Packages: []PlannedPackage{bootstrap, runtime, toolchain, root},
+		packages: []PlannedPackage{bootstrap, runtime, toolchain, root},
 	}
 
 	order, err := runtimeInstallOrder(plan, root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []PackageID{bootstrap.ID, runtime.ID, toolchain.ID}
+	want := []pkggraph.ID{bootstrap.ID, runtime.ID, toolchain.ID}
 	if len(order) != len(want) {
 		t.Fatalf("runtimeInstallOrder() = %v, want %v", order, want)
 	}
@@ -221,35 +225,40 @@ func TestRuntimeInstallOrderAppliesBuildDependenciesBeforeRuntimeDependencies(
 	}
 }
 
-func independentBranchPlan(t *testing.T) (*BuildPlan, PackageID, PackageID) {
+func independentBranchPlan(
+	t *testing.T,
+	store *Store,
+) (*BuildPlan, pkggraph.ID, pkggraph.ID) {
 	t.Helper()
-	firstDefinition := PackageDefinition{Name: "first"}
-	firstID := testPackageID(t, firstDefinition)
-	secondDefinition := PackageDefinition{Name: "second"}
-	secondID := testPackageID(t, secondDefinition)
-	rootDefinition := PackageDefinition{
+	firstDefinition := pkggraph.Definition{Name: "first", Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone}}
+	firstID := testID(t, firstDefinition)
+	secondDefinition := pkggraph.Definition{Name: "second", Build: pkggraph.BuildSpec{Kind: pkggraph.BuildNone}}
+	secondID := testID(t, secondDefinition)
+	rootDefinition := pkggraph.Definition{
 		Name:    "root",
-		RunDeps: []PackageID{firstID, secondID},
+		Build:   pkggraph.BuildSpec{Kind: pkggraph.BuildNone},
+		RunDeps: []pkggraph.ID{firstID, secondID},
 	}
-	rootID := testPackageID(t, rootDefinition)
+	rootID := testID(t, rootDefinition)
 	return &BuildPlan{
-		Roots: []PackageID{rootID},
-		Packages: []PlannedPackage{
+		storePath: store.path,
+		roots:     []pkggraph.ID{rootID},
+		packages: []PlannedPackage{
 			{
 				ID:          firstID,
 				Definition:  firstDefinition,
-				Disposition: BuildDispositionLocal,
+				Disposition: BuildDispositionNeedsBuild,
 			},
 			{
 				ID:          secondID,
 				Definition:  secondDefinition,
-				Disposition: BuildDispositionLocal,
+				Disposition: BuildDispositionNeedsBuild,
 			},
 			{
 				ID:            rootID,
 				Definition:    rootDefinition,
-				Prerequisites: []PackageID{firstID, secondID},
-				Disposition:   BuildDispositionLocal,
+				Prerequisites: []pkggraph.ID{firstID, secondID},
+				Disposition:   BuildDispositionNeedsBuild,
 			},
 		},
 	}, firstID, secondID
