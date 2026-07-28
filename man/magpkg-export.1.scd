@@ -12,9 +12,11 @@ magpkg-export - export package runtime closures as a tar archive
 
 # DESCRIPTION
 
-Unless *--no-build* is specified, *magpkg export* first builds the selected
-packages. It then composes their runtime closures from artifacts in the store
-and writes the resulting filesystem as one deterministic tar archive.
+*magpkg export* first realizes the selected packages. Existing local artifacts
+are reused, missing artifacts are requested from a configured binary cache,
+and remaining packages are built locally. It then composes their runtime
+closures from artifacts in the store and writes the resulting filesystem as
+one deterministic tar archive.
 
 A _ROOT_ may be an exported top-level Jsonnet field name or a package ID.
 When no roots are named, every exported root is selected. Runtime dependencies
@@ -45,18 +47,19 @@ management metadata created by *magpkg sync*.
 	Use _PATH_ as the package store.
 
 *--binary-cache* _URL_
-	Request missing package artifacts from _URL_ during the build phase.
-	Without this option, *MAGPKG_BINARY_CACHE* is used. This option has no
-	effect with *--no-build*.
-
-*--cache-only*
-	During the build phase, permit existing local artifacts and binary-cache
-	substitutions but prohibit source fetching and local package builds. It
-	cannot be combined with *--no-build*.
+	Request missing package artifacts from _URL_. Without this option,
+	*MAGPKG_BINARY_CACHE* is used, including with *--no-build*.
 
 *--no-build*
-	Do not invoke the build or binary-cache pipeline. Every artifact in the
-	selected runtime closure must already exist in the store.
+	Permit existing local artifacts and binary-cache substitutions, but never
+	fetch package sources or execute local builds. A required cache miss is an
+	error.
+
+*--no-binary-cache*
+	Do not request missing artifacts from a binary cache. This overrides both
+	*--binary-cache* and *MAGPKG_BINARY_CACHE*. Local builds remain enabled
+	unless *--no-build* is also specified. Combining the two options permits
+	only artifacts already in the local store.
 
 *--jobs* _N_
 	Run at most _N_ package builds concurrently. The default is 1.
@@ -100,7 +103,7 @@ magpkg export --format tar -o - packages.jsonnet development |
 	tar -x -C environment
 ```
 
-Export without performing builds:
+Export without fetching sources or performing local builds:
 
 ```
 magpkg export --no-build -o environment.tar.xz packages.jsonnet development

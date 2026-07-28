@@ -12,11 +12,12 @@ magpkg-sync - synchronize package runtime closures into a destination
 
 # DESCRIPTION
 
-Unless *--no-build* is specified, *magpkg sync* first builds the selected
-packages. It then composes their runtime closures from artifacts already in the
-store and makes the magpkg-managed portion of _PATH_ match the composed result.
-A _ROOT_ may be an exported Jsonnet field name or a package ID. When no roots
-are named, every exported root is selected.
+*magpkg sync* first realizes the selected packages. Existing local artifacts
+are reused, missing artifacts are requested from a configured binary cache,
+and remaining packages are built locally. It then composes their runtime
+closures from artifacts in the store and makes the magpkg-managed portion of
+_PATH_ match the composed result. A _ROOT_ may be an exported Jsonnet field
+name or a package ID. When no roots are named, every exported root is selected.
 
 Destination state is recorded in _PATH/.magpkg/manifest.json_. The manifest
 records package IDs and the type, mode, ownership, and content identity of
@@ -46,14 +47,8 @@ path. Fetch progress and package build output are written to standard error.
 	Use _PATH_ as the package store.
 
 *--binary-cache* _URL_
-	Request missing package artifacts from _URL_ during the build phase.
-	Without this option, *MAGPKG_BINARY_CACHE* is used. This option has no
-	effect with *--no-build*.
-
-*--cache-only*
-	During the build phase, permit existing local artifacts and binary-cache
-	substitutions but prohibit source fetching and local package builds. It
-	cannot be combined with *--no-build*.
+	Request missing package artifacts from _URL_. Without this option,
+	*MAGPKG_BINARY_CACHE* is used, including with *--no-build*.
 
 *--dry-run*
 	Verify and print the destination plan without applying it or creating
@@ -61,8 +56,15 @@ path. Fetch progress and package build output are written to standard error.
 	fetched, or built before destination planning.
 
 *--no-build*
-	Do not invoke the build or binary-cache pipeline. Every artifact in the
-	selected runtime closure must already exist in the store.
+	Permit existing local artifacts and binary-cache substitutions, but never
+	fetch package sources or execute local builds. A required cache miss is an
+	error.
+
+*--no-binary-cache*
+	Do not request missing artifacts from a binary cache. This overrides both
+	*--binary-cache* and *MAGPKG_BINARY_CACHE*. Local builds remain enabled
+	unless *--no-build* is also specified. Combining the two options permits
+	only artifacts already in the local store.
 
 *--force*
 	Replace modified manifest-owned files and symlinks, remove modified owned

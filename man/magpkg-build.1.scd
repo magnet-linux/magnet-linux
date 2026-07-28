@@ -38,12 +38,18 @@ fetches.
 
 *--binary-cache* _URL_
 	Request missing package artifacts from _URL_. Without this option,
-	*MAGPKG_BINARY_CACHE* is used.
+	*MAGPKG_BINARY_CACHE* is used, including with *--no-build*.
 
-*--cache-only*
+*--no-build*
 	Permit existing local artifacts and binary-cache substitutions, but never
 	fetch package sources or execute local builds. A required cache miss is an
 	error.
+
+*--no-binary-cache*
+	Do not request missing artifacts from a binary cache. This overrides both
+	*--binary-cache* and *MAGPKG_BINARY_CACHE*. Local builds remain enabled
+	unless *--no-build* is also specified. Combining the two options permits
+	only artifacts already in the local store.
 
 *--jobs* _N_
 	Run at most _N_ package builds concurrently. The default is 1. A blocked

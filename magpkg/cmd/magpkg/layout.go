@@ -28,7 +28,24 @@ func resolveStorePath(explicitStore string) (string, error) {
 	return absolute, nil
 }
 
-func resolveBinaryCacheURL(explicitCache string) string {
+func resolveEnvironmentsPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("determine home directory: %w", err)
+	}
+	absolute, err := filepath.Abs(
+		filepath.Join(home, ".magpkg", "environments"),
+	)
+	if err != nil {
+		return "", fmt.Errorf("resolve shell environments path: %w", err)
+	}
+	return absolute, nil
+}
+
+func resolveBinaryCacheURL(explicitCache string, disabled bool) string {
+	if disabled {
+		return ""
+	}
 	if explicitCache != "" {
 		return explicitCache
 	}

@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -412,7 +413,14 @@ func TestBuildUsesBinaryCacheFromEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(handler)
+	var cacheRequests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		cacheRequests.Add(1)
+		handler.ServeHTTP(writer, request)
+	}))
 	defer server.Close()
 
 	localPath := filepath.Join(t.TempDir(), "local")
@@ -427,14 +435,14 @@ func TestBuildUsesBinaryCacheFromEnvironment(t *testing.T) {
 		[]string{
 			"build",
 			"--store", localPath,
-			"--cache-only",
+			"--no-build",
 			graphFile,
 			"cached",
 		},
 		&stdout,
 		&stderr,
 	); err != nil {
-		t.Fatalf("cache-only build: %v\nstderr:\n%s", err, stderr.String())
+		t.Fatalf("no-build cache substitution: %v\nstderr:\n%s", err, stderr.String())
 	}
 	localArtifact := strings.TrimSpace(stdout.String())
 	remoteBytes, err := os.ReadFile(remoteArtifact)
@@ -447,6 +455,203 @@ func TestBuildUsesBinaryCacheFromEnvironment(t *testing.T) {
 	}
 	if !bytes.Equal(localBytes, remoteBytes) {
 		t.Fatal("local artifact differs from binary-cache artifact")
+	}
+	if cacheRequests.Load() != 1 {
+		t.Fatalf("binary-cache requests = %d, want 1", cacheRequests.Load())
+	}
+
+	noCachePath := filepath.Join(t.TempDir(), "no-cache")
+	if err := pkgstore.Init(noCachePath); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if err := runCLI(
+		context.Background(),
+		[]string{
+			"build",
+			"--store", noCachePath,
+			"--no-binary-cache",
+			graphFile,
+			"cached",
+		},
+		&stdout,
+		&stderr,
+	); err != nil {
+		t.Fatalf("build without binary cache: %v\nstderr:\n%s", err, stderr.String())
+	}
+	if cacheRequests.Load() != 1 {
+		t.Fatalf(
+			"--no-binary-cache made a request; request count = %d",
+			cacheRequests.Load(),
+		)
+	}
+
+	localOnlyPath := filepath.Join(t.TempDir(), "local-only")
+	if err := pkgstore.Init(localOnlyPath); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	err = runCLI(
+		context.Background(),
+		[]string{
+			"build",
+			"--store", localOnlyPath,
+			"--no-build",
+			"--no-binary-cache",
+			graphFile,
+			"cached",
+		},
+		&stdout,
+		&stderr,
+	)
+	if err == nil || !strings.Contains(err.Error(), "no binary cache is configured") {
+		t.Fatalf("local-only build error = %v, want missing artifact error", err)
+	}
+	if cacheRequests.Load() != 1 {
+		t.Fatalf(
+			"local-only build made a cache request; request count = %d",
+			cacheRequests.Load(),
+		)
+	}
+}
+
+func TestShellCommandUsesCachedPackageLauncher(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(binaryCacheEnvironmentVariable, "")
+	storePath := filepath.Join(t.TempDir(), "store")
+	if err := pkgstore.Init(storePath); err != nil {
+		t.Fatal(err)
+	}
+
+	sourceArchive := filepath.Join(t.TempDir(), "shell.tar")
+	writeShellLauncherArchive(t, sourceArchive)
+	source, err := os.ReadFile(sourceArchive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(source)
+	sourceURL := (&url.URL{
+		Scheme: "file",
+		Path:   filepath.ToSlash(sourceArchive),
+	}).String()
+	graphFile := filepath.Join(t.TempDir(), "shell.jsonnet")
+	graphContents := fmt.Sprintf(`{
+  shell: {
+    name: 'test-shell',
+    build: { kind: 'unpack' },
+    runDeps: [],
+    buildDeps: [],
+    fetch: [{
+      filename: 'shell.tar',
+      sha256: %q,
+      urls: [%q],
+    }],
+  },
+}
+`, hex.EncodeToString(digest[:]), sourceURL)
+	if err := os.WriteFile(graphFile, []byte(graphContents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := runCLIWithInput(
+		context.Background(),
+		[]string{
+			"shell",
+			"--store", storePath,
+			graphFile,
+			"shell",
+			"--",
+			"/bin/sh",
+			"-c",
+			"read value; printf 'input=%s\\n' \"$value\"",
+		},
+		strings.NewReader("from-stdin\n"),
+		&stdout,
+		&stderr,
+	); err != nil {
+		t.Fatalf("shell: %v\nstderr:\n%s", err, stderr.String())
+	}
+	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	if len(lines) != 2 || lines[1] != "input=from-stdin" {
+		t.Fatalf("shell stdout = %q", stdout.String())
+	}
+	environmentsPath := filepath.Join(home, ".magpkg", "environments")
+	if !strings.HasPrefix(
+		lines[0],
+		"launcher-root="+filepath.Join(environmentsPath, "roots")+string(os.PathSeparator),
+	) || !strings.HasSuffix(lines[0], string(os.PathSeparator)+"root") {
+		t.Fatalf("launcher root output = %q", lines[0])
+	}
+
+	graph, err := graphjsonnet.EvaluateFile(
+		context.Background(),
+		graphFile,
+		graphjsonnet.Options{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packageID := graph.Roots["shell"]
+	artifactPath := filepath.Join(
+		storePath,
+		"packages",
+		"test-shell-"+string(packageID)+".tar.zst",
+	)
+	if err := os.Remove(artifactPath); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if err := runCLIWithInput(
+		context.Background(),
+		[]string{
+			"shell",
+			"--store", filepath.Join(t.TempDir(), "missing-store"),
+			"--no-build",
+			"--no-binary-cache",
+			graphFile,
+			"shell",
+			"--",
+			"/bin/sh",
+			"-c",
+			"printf 'cached-environment\\n'",
+		},
+		strings.NewReader(""),
+		&stdout,
+		&stderr,
+	); err != nil {
+		t.Fatalf("cached shell: %v\nstderr:\n%s", err, stderr.String())
+	}
+	if !strings.HasSuffix(stdout.String(), "cached-environment\n") {
+		t.Fatalf("cached shell stdout = %q", stdout.String())
+	}
+	if _, err := os.Stat(artifactPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cached shell recreated package artifact: %v", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if err := runCLI(
+		context.Background(),
+		[]string{
+			"clean",
+			"--store", filepath.Join(t.TempDir(), "missing-store"),
+			"--environments",
+			"--older-than", "1ns",
+		},
+		&stdout,
+		&stderr,
+	); err != nil {
+		t.Fatalf("clean environments: %v\nstderr:\n%s", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "cleaned environment ") {
+		t.Fatalf("clean environments stdout = %q", stdout.String())
 	}
 }
 
@@ -581,26 +786,8 @@ func TestSyncAndUninstallCommands(t *testing.T) {
 		},
 		&stdout,
 		&stderr,
-	); err == nil || !strings.Contains(err.Error(), "has no package artifact") {
-		t.Fatalf("sync --no-build error = %v, want missing artifact error", err)
-	}
-	stdout.Reset()
-	stderr.Reset()
-	if err := runCLI(
-		context.Background(),
-		[]string{
-			"sync",
-			"--store", storePath,
-			"--dest", destination,
-			"--force",
-			"--cache-only",
-			graphFile,
-			"hello",
-		},
-		&stdout,
-		&stderr,
 	); err == nil || !strings.Contains(err.Error(), "no binary cache is configured") {
-		t.Fatalf("sync --cache-only error = %v, want cache configuration error", err)
+		t.Fatalf("sync --no-build error = %v, want missing artifact error", err)
 	}
 	stdout.Reset()
 	stderr.Reset()
@@ -889,6 +1076,18 @@ func TestResolveStorePathUsesDefault(t *testing.T) {
 	}
 }
 
+func TestResolveEnvironmentsPathUsesMagpkgHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path, err := resolveEnvironmentsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".magpkg", "environments"); path != want {
+		t.Fatalf("environments path = %q, want %q", path, want)
+	}
+}
+
 func TestCommandStoreOpenOptions(t *testing.T) {
 	options := commandStoreOpenOptions("https://cache.example")
 	if options.BinaryCacheURL != "https://cache.example" {
@@ -1022,4 +1221,55 @@ func writeSourceArchive(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return archivePath
+}
+
+func writeShellLauncherArchive(t *testing.T, destination string) {
+	t.Helper()
+	file, err := os.OpenFile(
+		destination,
+		os.O_WRONLY|os.O_CREATE|os.O_EXCL,
+		0o600,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := tar.NewWriter(file)
+	launcher := `#!/bin/sh
+root=$1
+shift
+printf 'launcher-root=%s\n' "$root"
+if test "$#" -eq 0; then
+	printf 'default-shell\n'
+	exit 0
+fi
+exec "$@"
+`
+	for _, header := range []*tar.Header{
+		{
+			Name:     "libexec/",
+			Typeflag: tar.TypeDir,
+			Mode:     0o755,
+		},
+		{
+			Name:     "libexec/magpkg-shell",
+			Typeflag: tar.TypeReg,
+			Mode:     0o755,
+			Size:     int64(len(launcher)),
+		},
+	} {
+		if err := writer.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+		if header.Typeflag == tar.TypeReg {
+			if _, err := writer.Write([]byte(launcher)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
 }

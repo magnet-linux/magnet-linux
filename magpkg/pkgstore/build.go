@@ -24,9 +24,9 @@ type Artifact struct {
 // BuildOptions controls complete package realization through local artifacts,
 // binary-cache substitution, source fetching, and local builds.
 type BuildOptions struct {
-	// CacheOnly permits existing local artifacts and binary-cache
+	// NoBuild permits existing local artifacts and binary-cache
 	// substitutions but prohibits source fetching and local package builds.
-	CacheOnly bool
+	NoBuild bool
 
 	// Jobs is the maximum number of package builds performed concurrently by
 	// this process. Zero selects one job.
@@ -135,7 +135,7 @@ func (s *Store) BuildPackagesWithOptions(
 		ctx,
 		graph,
 		packageIDs,
-		options.CacheOnly,
+		options.NoBuild,
 	); err != nil {
 		return nil, err
 	}
@@ -143,12 +143,12 @@ func (s *Store) BuildPackagesWithOptions(
 	if err != nil {
 		return nil, err
 	}
-	if options.CacheOnly {
+	if options.NoBuild {
 		for _, planned := range plan.packages {
 			if planned.Disposition == BuildDispositionNeedsBuild {
 				return nil, fmt.Errorf(
 					"pkgstore: package %s still requires a local build "+
-						"after cache-only substitution",
+						"after binary-cache substitution",
 					planned.ID,
 				)
 			}

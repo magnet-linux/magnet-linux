@@ -33,10 +33,10 @@ func runExport(
 		"",
 		"binary cache URL (default: $MAGPKG_BINARY_CACHE)",
 	)
-	cacheOnly := flags.Bool(
-		"cache-only",
+	noBinaryCache := flags.Bool(
+		"no-binary-cache",
 		false,
-		"permit cached artifacts but prohibit local package builds",
+		"do not request missing artifacts from a binary cache",
 	)
 	output := flags.StringP(
 		"output",
@@ -58,7 +58,7 @@ func runExport(
 	noBuild := flags.Bool(
 		"no-build",
 		false,
-		"require package artifacts to exist instead of building missing ones",
+		"prohibit source fetching and local builds",
 	)
 	jobs := flags.Int(
 		"jobs",
@@ -124,9 +124,6 @@ func runExport(
 	if *parallelism < 1 {
 		return errors.New("--parallelism must be at least one")
 	}
-	if *noBuild && *cacheOnly {
-		return errors.New("--no-build and --cache-only are mutually exclusive")
-	}
 	if *output != "-" {
 		if _, err := os.Lstat(*output); err == nil {
 			return fmt.Errorf("export output %q already exists", *output)
@@ -153,13 +150,12 @@ func runExport(
 	if err != nil {
 		return err
 	}
-	cacheURL := ""
-	if !*noBuild {
-		cacheURL = resolveBinaryCacheURL(*binaryCache)
-	}
 	store, err := pkgstore.OpenWithOptions(
 		storePath,
-		commandStoreOpenOptions(cacheURL),
+		commandStoreOpenOptions(resolveBinaryCacheURL(
+			*binaryCache,
+			*noBinaryCache,
+		)),
 	)
 	if err != nil {
 		return fmt.Errorf(
@@ -181,26 +177,24 @@ func runExport(
 		return err
 	}
 
-	if !*noBuild {
-		fetchProgress := newFetchProgressRenderer(ctx, stderr)
-		_, buildErr := store.BuildPackagesWithOptions(
-			ctx,
-			graph,
-			rootIDs,
-			pkgstore.BuildOptions{
-				CacheOnly:        *cacheOnly,
-				Jobs:             *jobs,
-				FetchJobs:        *fetchJobs,
-				BuildParallelism: *parallelism,
-				Stdout:           stderr,
-				Stderr:           stderr,
-				FetchProgress:    fetchProgress.Report,
-			},
-		)
-		fetchProgress.Finish()
-		if buildErr != nil {
-			return buildErr
-		}
+	fetchProgress := newFetchProgressRenderer(ctx, stderr)
+	_, buildErr := store.BuildPackagesWithOptions(
+		ctx,
+		graph,
+		rootIDs,
+		pkgstore.BuildOptions{
+			NoBuild:          *noBuild,
+			Jobs:             *jobs,
+			FetchJobs:        *fetchJobs,
+			BuildParallelism: *parallelism,
+			Stdout:           stderr,
+			Stderr:           stderr,
+			FetchProgress:    fetchProgress.Report,
+		},
+	)
+	fetchProgress.Finish()
+	if buildErr != nil {
+		return buildErr
 	}
 
 	export := func(writer io.Writer) error {

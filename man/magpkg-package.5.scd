@@ -300,6 +300,22 @@ packages use these paths respectively:
 The name prefix is for inspection; *name* is already included in the ID.
 Builds and package cleanup coordinate by package ID using advisory locks.
 
+# SHELL LAUNCHERS
+
+A runtime closure intended for *magpkg shell* must provide an executable
+regular file at _/libexec/magpkg-shell_. Magpkg executes this launcher on the
+host with the absolute materialized environment root as its first argument and
+the requested command arguments after it. With no command arguments, the
+launcher selects the interactive shell.
+
+The launcher, rather than the package-store or shell-environment libraries,
+defines sandboxing, mounts, namespaces, environment variables, and command
+execution. It must remain in the foreground for the complete shell session.
+
+Launchers run with the invoking user's host permissions before establishing
+any sandbox. A binary cache may supply the package containing a launcher, so
+only trusted packages and caches should be used.
+
 # SEE ALSO
 
-*magpkg*(1), *magpkg-store*(5), *jsonnet*(1), *scdoc*(5)
+*magpkg*(1), *magpkg-shell*(1), *magpkg-store*(5), *jsonnet*(1), *scdoc*(5)

@@ -16,7 +16,7 @@ func (s *Store) substituteBuildClosure(
 	ctx context.Context,
 	graph *pkggraph.Graph,
 	roots []pkggraph.ID,
-	cacheOnly bool,
+	noBuild bool,
 ) error {
 	if err := validateStore(s); err != nil {
 		return err
@@ -30,7 +30,7 @@ func (s *Store) substituteBuildClosure(
 	if err := graph.Validate(); err != nil {
 		return err
 	}
-	if s.binaryCache == nil && !cacheOnly {
+	if s.binaryCache == nil && !noBuild {
 		return nil
 	}
 
@@ -82,17 +82,17 @@ func (s *Store) substituteBuildClosure(
 				return err
 			}
 		}
-		if !available && cacheOnly {
+		if !available && noBuild {
 			if s.binaryCache == nil {
 				return fmt.Errorf(
-					"pkgstore: package %s is missing during a cache-only "+
-						"build and no binary cache is configured",
+					"pkgstore: package %s is missing, local builds are "+
+						"disabled, and no binary cache is configured",
 					packageID,
 				)
 			}
 			return fmt.Errorf(
 				"pkgstore: package %s is not available from the binary cache "+
-					"during a cache-only build",
+					"and local builds are disabled",
 				packageID,
 			)
 		}

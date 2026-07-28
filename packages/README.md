@@ -45,3 +45,26 @@ The other roots are `make`, `musl`, `musl_rt`, `binutils`, `coreutils`,
 `tar`, `grep`, `libgcc_rt`, and `libstdcpp_rt`. Separate build invocations can
 share the same store: package locks prevent duplicate publication while an
 executor continues with any other ready branch.
+
+## Shell environment
+
+`shell.jsonnet` demonstrates a package-defined development shell. Its runtime
+closure supplies the bootstrap tools and an executable launcher at
+`/libexec/magpkg-shell`. Magpkg materializes and leases the closure, while the
+launcher controls bubblewrap mounts, isolation, and the default interactive
+shell:
+
+```sh
+go -C magpkg run ./cmd/magpkg shell ../packages/shell.jsonnet shell
+```
+
+A command after `--` is passed unchanged to the launcher:
+
+```sh
+go -C magpkg run ./cmd/magpkg shell \
+  ../packages/shell.jsonnet shell -- cc --version
+```
+
+Package-provided launchers execute on the host with the invoking user's
+permissions before creating their sandbox. Only trusted packages and binary
+caches should be used for shell environments.

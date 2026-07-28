@@ -33,10 +33,15 @@ func runBuild(
 		"",
 		"binary cache URL (default: $MAGPKG_BINARY_CACHE)",
 	)
-	cacheOnly := flags.Bool(
-		"cache-only",
+	noBinaryCache := flags.Bool(
+		"no-binary-cache",
 		false,
-		"require missing artifacts to be available from the binary cache",
+		"do not request missing artifacts from a binary cache",
+	)
+	noBuild := flags.Bool(
+		"no-build",
+		false,
+		"prohibit source fetching and local builds",
 	)
 	jsonnetFileFlag := flags.StringP(
 		"file",
@@ -121,7 +126,10 @@ func runBuild(
 	}
 	store, err := pkgstore.OpenWithOptions(
 		storePath,
-		commandStoreOpenOptions(resolveBinaryCacheURL(*binaryCache)),
+		commandStoreOpenOptions(resolveBinaryCacheURL(
+			*binaryCache,
+			*noBinaryCache,
+		)),
 	)
 	if err != nil {
 		return fmt.Errorf(
@@ -149,7 +157,7 @@ func runBuild(
 		graph,
 		rootIDs,
 		pkgstore.BuildOptions{
-			CacheOnly:        *cacheOnly,
+			NoBuild:          *noBuild,
 			Jobs:             *jobs,
 			FetchJobs:        *fetchJobs,
 			BuildParallelism: *parallelism,

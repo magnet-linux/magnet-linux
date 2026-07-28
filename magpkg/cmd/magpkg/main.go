@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"sort"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/andrewchambers/magnet-linux/magpkg/pkgstore"
+	"github.com/andrewchambers/magnet-linux/magpkg/shellenv"
 	"github.com/spf13/pflag"
 )
 
@@ -32,7 +34,23 @@ func main() {
 	)
 	defer stop()
 
-	if err := runCLI(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
+	if err := runCLIWithInput(
+		ctx,
+		os.Args[1:],
+		os.Stdin,
+		os.Stdout,
+		os.Stderr,
+	); err != nil {
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			if exitError.ExitCode() >= 0 {
+				os.Exit(exitError.ExitCode())
+			}
+			if status, ok := exitError.ProcessState.Sys().(syscall.WaitStatus); ok &&
+				status.Signaled() {
+				os.Exit(128 + int(status.Signal()))
+			}
+		}
 		fmt.Fprintf(os.Stderr, "magpkg: %v\n", err)
 		os.Exit(1)
 	}
@@ -41,6 +59,16 @@ func main() {
 func runCLI(
 	ctx context.Context,
 	args []string,
+	stdout io.Writer,
+	stderr io.Writer,
+) error {
+	return runCLIWithInput(ctx, args, os.Stdin, stdout, stderr)
+}
+
+func runCLIWithInput(
+	ctx context.Context,
+	args []string,
+	stdin io.Reader,
 	stdout io.Writer,
 	stderr io.Writer,
 ) error {
@@ -54,6 +82,8 @@ func runCLI(
 		return runInit(args[1:], stdout, stderr)
 	case "build":
 		return runBuild(ctx, args[1:], stdout, stderr)
+	case "shell":
+		return runShell(ctx, args[1:], stdin, stdout, stderr)
 	case "export":
 		return runExport(ctx, args[1:], stdout, stderr)
 	case "sync":
@@ -96,10 +126,15 @@ func runClean(
 		false,
 		"clean package artifacts and build workspaces",
 	)
+	cleanEnvironments := flags.Bool(
+		"environments",
+		false,
+		"clean materialized shell environments and workspaces",
+	)
 	cleanAll := flags.Bool(
 		"all",
 		false,
-		"clean fetches and packages",
+		"clean fetches, packages, and shell environments",
 	)
 	var olderThan cleanAgeFlag
 	flags.Var(
@@ -110,7 +145,7 @@ func runClean(
 	flags.Usage = func() {
 		fmt.Fprintln(
 			stderr,
-			"usage: magpkg clean (--all | --fetches | --packages) [options]",
+			"usage: magpkg clean (--all | --fetches | --packages | --environments) [options]",
 		)
 		fmt.Fprintln(stderr, "")
 		fmt.Fprintln(
@@ -130,14 +165,16 @@ func runClean(
 		return errors.New("clean does not accept positional arguments")
 	}
 
-	if !*cleanAll && !*cleanFetches && !*cleanPackages {
+	if !*cleanAll && !*cleanFetches && !*cleanPackages && !*cleanEnvironments {
 		return errors.New(
-			"clean requires at least one of --all, --fetches, or --packages",
+			"clean requires at least one of --all, --fetches, --packages, " +
+				"or --environments",
 		)
 	}
 	if *cleanAll {
 		*cleanFetches = true
 		*cleanPackages = true
+		*cleanEnvironments = true
 	}
 	cleanAge := defaultCleanAge
 	if olderThan.set {
@@ -147,39 +184,64 @@ func runClean(
 		return errors.New("cleanup age must be positive")
 	}
 
-	storePath, err := resolveStorePath(*storeFlag)
-	if err != nil {
-		return err
-	}
 	cleanOptions := pkgstore.CleanOptions{
 		OnRemove: func(event pkgstore.CleanEvent) {
 			fmt.Fprintf(stdout, "cleaned %s %s\n", event.Kind, event.Path)
 		},
 	}
-	store, err := pkgstore.Open(storePath)
-	if err != nil {
-		return fmt.Errorf(
-			"open store %q (run `magpkg init` first): %w",
-			storePath,
-			err,
-		)
-	}
-	if *cleanFetches {
-		if err := store.CleanFetchesWithOptions(
-			ctx,
-			cleanAge,
-			cleanOptions,
-		); err != nil {
-			return fmt.Errorf("clean fetches: %w", err)
+	if *cleanFetches || *cleanPackages {
+		storePath, err := resolveStorePath(*storeFlag)
+		if err != nil {
+			return err
+		}
+		store, err := pkgstore.Open(storePath)
+		if err != nil {
+			return fmt.Errorf(
+				"open store %q (run `magpkg init` first): %w",
+				storePath,
+				err,
+			)
+		}
+		if *cleanFetches {
+			if err := store.CleanFetchesWithOptions(
+				ctx,
+				cleanAge,
+				cleanOptions,
+			); err != nil {
+				return fmt.Errorf("clean fetches: %w", err)
+			}
+		}
+		if *cleanPackages {
+			if err := store.CleanPackagesWithOptions(
+				ctx,
+				cleanAge,
+				cleanOptions,
+			); err != nil {
+				return fmt.Errorf("clean packages: %w", err)
+			}
 		}
 	}
-	if *cleanPackages {
-		if err := store.CleanPackagesWithOptions(
+	if *cleanEnvironments {
+		environmentsPath, err := resolveEnvironmentsPath()
+		if err != nil {
+			return err
+		}
+		if err := shellenv.Clean(
 			ctx,
+			environmentsPath,
 			cleanAge,
-			cleanOptions,
+			shellenv.CleanOptions{
+				OnRemove: func(event shellenv.CleanEvent) {
+					fmt.Fprintf(
+						stdout,
+						"cleaned %s %s\n",
+						event.Kind,
+						event.Path,
+					)
+				},
+			},
 		); err != nil {
-			return fmt.Errorf("clean packages: %w", err)
+			return fmt.Errorf("clean environments: %w", err)
 		}
 	}
 	return nil
@@ -448,10 +510,11 @@ func writeUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "commands:")
 	fmt.Fprintln(writer, "  init   initialize a package store")
 	fmt.Fprintln(writer, "  build  build roots from a Jsonnet package graph")
+	fmt.Fprintln(writer, "  shell  enter a package-defined shell environment")
 	fmt.Fprintln(writer, "  export  export runtime closures as a tar archive")
 	fmt.Fprintln(writer, "  sync   synchronize a runtime closure into a destination")
 	fmt.Fprintln(writer, "  uninstall  remove a synchronized runtime closure")
-	fmt.Fprintln(writer, "  clean  remove old fetches and package artifacts")
+	fmt.Fprintln(writer, "  clean  remove old cached state")
 	fmt.Fprintln(writer, "  serve-cache  serve package artifacts over HTTP")
 	fmt.Fprintln(writer, "")
 	fmt.Fprintln(writer, "Run `magpkg <command> --help` for command-specific help.")

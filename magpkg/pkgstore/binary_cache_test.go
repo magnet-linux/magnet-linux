@@ -94,7 +94,7 @@ func TestBinaryCacheHitSkipsSourcesAndBuildDependencies(t *testing.T) {
 		context.Background(),
 		graph,
 		[]pkggraph.ID{rootID},
-		BuildOptions{CacheOnly: true},
+		BuildOptions{NoBuild: true},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -194,7 +194,7 @@ func TestBinaryCacheMissFallsBackToLocalBuild(t *testing.T) {
 	}
 }
 
-func TestCacheOnlyMissDoesNotFetchSources(t *testing.T) {
+func TestNoBuildCacheMissDoesNotFetchSources(t *testing.T) {
 	cacheServer := httptest.NewServer(http.NotFoundHandler())
 	defer cacheServer.Close()
 	var sourceRequests atomic.Int64
@@ -231,10 +231,10 @@ func TestCacheOnlyMissDoesNotFetchSources(t *testing.T) {
 		context.Background(),
 		graph,
 		[]pkggraph.ID{packageID},
-		BuildOptions{CacheOnly: true},
+		BuildOptions{NoBuild: true},
 	)
-	if err == nil || !strings.Contains(err.Error(), "cache-only build") {
-		t.Fatalf("BuildPackagesWithOptions() error = %v, want cache-only miss", err)
+	if err == nil || !strings.Contains(err.Error(), "local builds are disabled") {
+		t.Fatalf("BuildPackagesWithOptions() error = %v, want no-build miss", err)
 	}
 	if sourceRequests.Load() != 0 {
 		t.Fatalf("source requests = %d, want 0", sourceRequests.Load())
@@ -242,7 +242,7 @@ func TestCacheOnlyMissDoesNotFetchSources(t *testing.T) {
 	if available, err := store.packageAvailable(packageID, definition.Name); err != nil {
 		t.Fatal(err)
 	} else if available {
-		t.Fatal("cache-only miss published an artifact")
+		t.Fatal("no-build miss published an artifact")
 	}
 }
 
@@ -334,7 +334,7 @@ func TestConcurrentBinaryCacheSubstitutionDownloadsOnce(t *testing.T) {
 				context.Background(),
 				graph,
 				[]pkggraph.ID{packageID},
-				BuildOptions{CacheOnly: true},
+				BuildOptions{NoBuild: true},
 			)
 			errorsFound <- err
 		}()

@@ -30,10 +30,10 @@ func runSync(
 		"",
 		"binary cache URL (default: $MAGPKG_BINARY_CACHE)",
 	)
-	cacheOnly := flags.Bool(
-		"cache-only",
+	noBinaryCache := flags.Bool(
+		"no-binary-cache",
 		false,
-		"permit cached artifacts but prohibit local package builds",
+		"do not request missing artifacts from a binary cache",
 	)
 	destination := flags.String(
 		"dest",
@@ -54,7 +54,7 @@ func runSync(
 	noBuild := flags.Bool(
 		"no-build",
 		false,
-		"require package artifacts to exist instead of building missing ones",
+		"prohibit source fetching and local builds",
 	)
 	force := flags.Bool(
 		"force",
@@ -129,10 +129,6 @@ func runSync(
 	if *deleteUnmanaged && !*force {
 		return errors.New("--delete-unmanaged requires --force")
 	}
-	if *noBuild && *cacheOnly {
-		return errors.New("--no-build and --cache-only are mutually exclusive")
-	}
-
 	positional := flags.Args()
 	jsonnetFile := *jsonnetFileFlag
 	if jsonnetFile == "" {
@@ -151,13 +147,12 @@ func runSync(
 	if err != nil {
 		return err
 	}
-	cacheURL := ""
-	if !*noBuild {
-		cacheURL = resolveBinaryCacheURL(*binaryCache)
-	}
 	store, err := pkgstore.OpenWithOptions(
 		storePath,
-		commandStoreOpenOptions(cacheURL),
+		commandStoreOpenOptions(resolveBinaryCacheURL(
+			*binaryCache,
+			*noBinaryCache,
+		)),
 	)
 	if err != nil {
 		return fmt.Errorf(
@@ -179,26 +174,24 @@ func runSync(
 		return err
 	}
 
-	if !*noBuild {
-		fetchProgress := newFetchProgressRenderer(ctx, stderr)
-		_, buildErr := store.BuildPackagesWithOptions(
-			ctx,
-			graph,
-			rootIDs,
-			pkgstore.BuildOptions{
-				CacheOnly:        *cacheOnly,
-				Jobs:             *jobs,
-				FetchJobs:        *fetchJobs,
-				BuildParallelism: *parallelism,
-				Stdout:           stderr,
-				Stderr:           stderr,
-				FetchProgress:    fetchProgress.Report,
-			},
-		)
-		fetchProgress.Finish()
-		if buildErr != nil {
-			return buildErr
-		}
+	fetchProgress := newFetchProgressRenderer(ctx, stderr)
+	_, buildErr := store.BuildPackagesWithOptions(
+		ctx,
+		graph,
+		rootIDs,
+		pkgstore.BuildOptions{
+			NoBuild:          *noBuild,
+			Jobs:             *jobs,
+			FetchJobs:        *fetchJobs,
+			BuildParallelism: *parallelism,
+			Stdout:           stderr,
+			Stderr:           stderr,
+			FetchProgress:    fetchProgress.Report,
+		},
+	)
+	fetchProgress.Finish()
+	if buildErr != nil {
+		return buildErr
 	}
 
 	result, err := store.Sync(
