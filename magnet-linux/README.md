@@ -2,7 +2,8 @@
 
 A small, manually administered system assembled with magpkg. The initial target
 is x86-64 UEFI, with console installation, sinit and perp, and an ext4 or Btrfs
-root. The optional Hyprland profile provides graphical login after installation.
+root. The optional Hyprland profile includes desktop packages; configure graphical
+login after creating an ordinary user, as described in INSTALL.txt.
 
 For the ISO/USB installer, start with [INSTALL.txt](INSTALL.txt). It installs
 into already mounted filesystems and initializes ordinary editable `/etc`

@@ -118,9 +118,16 @@ case "$profile" in
 esac
 root_cmd env "MAGPKG=$magpkg" "$distro/magnet-linux.sh" install \
   --root "$target" --source "$distro/.." --store "$store" --bootstrap "$seed" \
-  --profile "$install_profile" --hostname magnet-desktop --user "$user" \
-  --password-file "$vm/.install-password" --root-password-file "$vm/.install-root-password" \
-  --ssh-key "$vm/client-key.pub" --enable-ssh --yes > "$vm/install.log"
+  --profile "$install_profile" --hostname magnet-desktop \
+  --root-password-file "$vm/.install-root-password" --yes > "$vm/install.log"
+# This desktop demo explicitly adds a user after the root-only installation.
+root_cmd chroot "$target" /bin/useradd -m -u 1000 -g users -s /bin/bash "$user"
+printf '%s:%s\n' "$user" "$(cat "$vm/.install-password")" |
+  root_cmd chroot "$target" /bin/chpasswd -c SHA512
+root_cmd "$distro/setup-login.sh" "$target" "$user" >> "$vm/install.log"
+root_cmd install -d -m 0700 -o 1000 -g 100 "$target/home/$user/.ssh"
+root_cmd install -m 0600 -o 1000 -g 100 "$vm/client-key.pub" "$target/home/$user/.ssh/authorized_keys"
+root_cmd chmod +t "$target/etc/perp/sshd"
 rm "$vm/.install-password" "$vm/.install-root-password"
 host_key=$(root_cmd cat "$target/etc/ssh/ssh_host_ed25519_key.pub")
 printf 'magnet-desktop-vm %s\n' "$host_key" > "$vm/known_hosts"

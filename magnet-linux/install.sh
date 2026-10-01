@@ -12,31 +12,30 @@ Mount an ext4 or Btrfs root, optional /home and /var, and a FAT EFI partition
 at MOUNTPOINT/boot/efi first. Partitioning and formatting are manual.
 
   --profile base|hyprland|hyprland-firefox|hyprland-chromium|hyprland-browsers
-  --hostname NAME          --user NAME
-  --password-file FILE     Administrator password (one line, private file)
-  --root-password-file FILE  Optional root password; otherwise root stays locked
-  --ssh-key FILE           Install an administrator's public SSH key
-  --enable-ssh             Enable the SSH server (public-key authentication)
-  --yes                    Noninteractive; requires profile, hostname, user,
-                           and password-file
+  --hostname NAME
+  --root-password-file FILE  Root password (one line, private file)
+  --yes                    Noninteractive; requires profile, hostname,
+                           and root-password-file
   --media PATH             Installation media (default /run/media/magnet)
   --source PATH --store PATH --bootstrap FILE
                            Use an already-built source tree/store on a host
+
+Only root and service accounts are configured. Add ordinary users afterward
+with chroot TARGET useradd and chroot TARGET passwd. All profiles initially
+boot to a text login; configure a desktop user before enabling graphical login.
 HELP
 }
-root='' profile='' hostname='' user='' password_file='' root_password_file='' ssh_key=''
-media=/run/media/magnet source_tree='' store='' seed='' noninteractive=false enable_ssh=false
+root='' profile='' hostname='' root_password_file=''
+media=/run/media/magnet source_tree='' store='' seed='' noninteractive=false
 while test "$#" -gt 0; do
   case "$1" in
     --help|-h) usage; exit 0;;
     --yes) noninteractive=true; shift;;
-    --enable-ssh) enable_ssh=true; shift;;
-    --root|--profile|--hostname|--user|--password-file|--root-password-file|--ssh-key|--media|--source|--store|--bootstrap)
+    --root|--profile|--hostname|--root-password-file|--media|--source|--store|--bootstrap)
       test "$#" -ge 2 || { echo "Missing value for $1" >&2; exit 2; }
       case "$1" in
         --root) root=$2;; --profile) profile=$2;; --hostname) hostname=$2;;
-        --user) user=$2;; --password-file) password_file=$2;;
-        --root-password-file) root_password_file=$2;; --ssh-key) ssh_key=$2;;
+        --root-password-file) root_password_file=$2;;
         --media) media=$2;; --source) source_tree=$2;; --store) store=$2;; --bootstrap) seed=$2;;
       esac
       shift 2;;
@@ -55,20 +54,13 @@ for path in var/lib var/lib/magpkg var/lib/magpkg/store var/log; do
   test ! -L "$target/$path" || { layout_error "Symlink at target/$path."; exit 1; }
 done
 if "$noninteractive"; then
-  test -n "$profile" && test -n "$hostname" && test -n "$user" && test -n "$password_file" ||
-    { echo '--yes requires profile, hostname, user, and password-file.' >&2; exit 2; }
+  test -n "$profile" && test -n "$hostname" && test -n "$root_password_file" ||
+    { echo '--yes requires profile, hostname, and root-password-file.' >&2; exit 2; }
 else
   test -n "$profile" || { read -r -p 'System profile? [base] ' profile; profile=${profile:-base}; }
   test -n "$hostname" || { read -r -p 'Hostname? [magnet] ' hostname; hostname=${hostname:-magnet}; }
-  test -n "$user" || read -r -p 'Administrator username? ' user
 fi
 [[ "$hostname" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]] || { echo 'Invalid hostname.' >&2; exit 2; }
-[[ "$user" =~ ^[a-z_][a-z0-9_-]*$ && "$user" != root && "$user" != nobody ]] ||
-  { echo 'Choose an ordinary lowercase user name.' >&2; exit 2; }
-case "$user" in
-  sshd|dhcpcd|chrony|greeter|messagebus|polkitd)
-    echo 'That name is reserved for a system account.' >&2; exit 2;;
-esac
 case "$profile" in
   base) selection=system.jsonnet; selected=system;;
   hyprland) selection=desktop-hyprland.jsonnet; selected=desktop;;
@@ -94,14 +86,9 @@ read_password() {
     { echo 'Password must be nonempty and contain no colons or line breaks.' >&2; return 1; }
   password=$first
 }
-read_password "$password_file" Administrator
-administrator_password=$password
-root_password=
-if test -n "$root_password_file"; then read_password "$root_password_file" Root; root_password=$password; fi
+read_password "$root_password_file" Root
+root_password=$password
 unset password
-if test -n "$ssh_key"; then
-  ssh-keygen -l -f "$ssh_key" >/dev/null || { echo 'Invalid SSH public key.' >&2; exit 2; }
-fi
 magpkg=${MAGPKG:-magpkg}
 if test -z "$source_tree"; then
   test -f "$media/MAGNET_INSTALL" && test -f "$media/profiles/$profile.sha256" ||
@@ -120,7 +107,7 @@ else
   media_install=false
 fi
 test -f "$source_tree/magnet-linux/$selection" && test -f "$seed"
-echo "Install $profile into $target ($root_type), hostname $hostname, administrator $user."
+echo "Install $profile into $target ($root_type), hostname $hostname, root account only."
 echo 'The installer will populate these mounts:'
 findmnt -R --mountpoint "$target" -o TARGET,SOURCE,FSTYPE
 if ! "$noninteractive"; then
@@ -129,7 +116,7 @@ if ! "$noninteractive"; then
 fi
 # Validate every mount before making the first change.
 fstab=$(mktemp)
-trap 'rm -f "$fstab"; unset administrator_password root_password' EXIT
+trap 'rm -f "$fstab"; unset root_password' EXIT
 write_fstab > "$fstab"
 mkdir -p "$target/var/log" "$target/etc"
 echo 'Installing packages...'
@@ -148,29 +135,18 @@ echo 'Setting up configuration and accounts...'
 install -m 0644 "$fstab" "$target/etc/fstab"
 "$source_tree/magnet-linux/setup-root.sh" "$target" "$hostname" "$root_uuid" "$esp_uuid"
 "$source_tree/magnet-linux/setup-tree.sh" "$target" "$seed"
-chroot "$target" /bin/useradd -m -u 1000 -g users -s /bin/bash "$user"
-printf '%s:%s\n' "$user" "$administrator_password" | chroot "$target" /bin/chpasswd -c SHA512
-unset administrator_password
-if test -n "$root_password"; then
-  printf 'root:%s\n' "$root_password" | chroot "$target" /bin/chpasswd -c SHA512
-fi
+printf 'root:%s\n' "$root_password" | chroot "$target" /bin/chpasswd -c SHA512
 unset root_password
-"$source_tree/magnet-linux/setup-doas.sh" "$target" "$user"
-if test "$profile" = base; then
-  chmod +t "$target/etc/perp/dhcpcd"
-else
-  "$source_tree/magnet-linux/setup-login.sh" "$target" "$user"
-fi
+# Desktop packages can be installed now and configured after creating a user.
+chmod +t "$target/etc/perp/dhcpcd"
 printf "{ system: (import './tree/magnet-linux/%s')['%s'] }\n" "$selection" "$selected" \
   > "$target/etc/magnet-linux/system.jsonnet"
-if test -n "$ssh_key"; then
-  install -d -m 0700 -o 1000 -g 100 "$target/home/$user/.ssh"
-  install -m 0600 -o 1000 -g 100 "$ssh_key" "$target/home/$user/.ssh/authorized_keys"
-fi
-if "$enable_ssh"; then chmod +t "$target/etc/perp/sshd"; fi
 echo 'Installing the UEFI bootloader...'
 "$source_tree/magnet-linux/setup-boot.sh" "$target" "$root_uuid" "$root_partuuid"
 printf 'profile=%s\nhostname=%s\nfilesystem=%s\n' "$profile" "$hostname" "$root_type" \
   > "$target/etc/magnet-linux/installation"
 sync
 echo 'Installation complete. Unmount the target, remove the installation media, and reboot.'
+if test "$profile" != base; then
+  echo 'Desktop packages are installed. See INSTALL.txt to add a user and configure graphical login.'
+fi

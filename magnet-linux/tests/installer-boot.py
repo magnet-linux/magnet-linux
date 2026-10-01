@@ -99,6 +99,7 @@ def main():
     parser.add_argument("--media-mode", choices=["cdrom", "usb"], default="cdrom")
     parser.add_argument("--profile", choices=["base", "hyprland"], default="base")
     parser.add_argument("--interactive", action="store_true", help="answer the real console prompts")
+    parser.add_argument("--with-user", action="store_true", help="manually add a user after installation and configure its desktop")
     parser.add_argument("--separate-boot", action="store_true", help="mount a separate ext4 /boot partition")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -117,7 +118,9 @@ def main():
         disk.truncate(16 * 1024**3)
     password = secrets.token_hex(12)
     root_password = secrets.token_hex(16)
-    (work / "credentials.txt").write_text(f"User: browser\nPassword: {password}\nRoot password: {root_password}\n")
+    login_user = "browser" if args.with_user else "root"
+    login_password = password if args.with_user else root_password
+    (work / "credentials.txt").write_text(f"User: {login_user}\nPassword: {login_password}\nRoot password: {root_password}\n")
     subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(work / "client-key")], check=True)
     public_key = (work / "client-key.pub").read_text().strip()
     partitions = "size=512M,type=U\nsize=14G,type=L\ntype=L" if args.separate_boot else "size=512M,type=U\ntype=L"
@@ -165,6 +168,19 @@ mount -o subvolid=5 /dev/vda2 /run/snapshots
 btrfs subvolume snapshot -r / /run/snapshots/snapshots/installed
 test -f /run/snapshots/snapshots/installed/etc/magnet-linux/installation
 umount /run/snapshots"""
+    user_check = "awk -F: '$3 >= 1000 && $3 != 65534 { exit 1 }' /etc/passwd"
+    post_install = ""
+    if args.with_user:
+        user_check = 'test "$(id -u browser)" = 1000'
+        post_install = """chroot /mnt useradd -m -u 1000 -g users -s /bin/bash browser
+printf 'browser:%s\\n' "$(cat /tmp/password)" | chroot /mnt chpasswd -c SHA512
+/mnt/etc/magnet-linux/tree/magnet-linux/setup-doas.sh /mnt browser
+install -d -m 0700 -o 1000 -g 100 /mnt/home/browser/.ssh
+install -m 0600 -o 1000 -g 100 /tmp/public-key /mnt/home/browser/.ssh/authorized_keys
+chmod +t /mnt/etc/perp/sshd
+"""
+        if args.profile == "hyprland":
+            post_install += "/mnt/etc/magnet-linux/tree/magnet-linux/setup-login.sh /mnt browser\n"
     installed_check = f"""#!/bin/bash
 set -eu
 exec > /var/log/installer-check.log 2>&1
@@ -174,7 +190,7 @@ test "$(findmnt -n -o FSTYPE /)" = {args.filesystem}
 mountpoint -q /boot/efi
 test -s /boot/efi/EFI/BOOT/BOOTX64.EFI
 test "$(hostname)" = magnet-installed
-test "$(id -u browser)" = 1000
+{user_check}
 test "$(stat -c %a /bin/doas)" = 4755
 test -x /bin/magnet-linux
 test -f /etc/magnet-linux/tree/packages/storage.jsonnet
@@ -186,11 +202,10 @@ magpkg sync --no-build --no-binary-cache --dest /var/tmp/hello /etc/magnet-linux
 test "$(/var/tmp/hello/bin/hello)" = 'hello world'
 rm /etc/rc.local
 {{ echo; echo MAGNET_INSTALLED_OK; }} > /dev/console
-poweroff
 """
     check64 = base64.b64encode(installed_check.encode()).decode()
-    install_command = f"""magnet-linux install --root /mnt --profile {args.profile} --hostname magnet-installed --user browser \\
-  --password-file /tmp/password --root-password-file /tmp/root-password --ssh-key /tmp/public-key --enable-ssh --yes"""
+    install_command = f"""magnet-linux install --root /mnt --profile {args.profile} --hostname magnet-installed \\
+  --root-password-file /tmp/root-password --yes"""
     script = f"""#!/bin/bash
 set -eu
 trap 'echo MAGNET_INSTALL_TEST_FAILED' ERR
@@ -219,10 +234,18 @@ mkdir -p /tmp/bad-media/profiles
 touch /tmp/bad-media/MAGNET_INSTALL /tmp/bad-media/profiles/{args.profile}.sha256
 echo bad > /tmp/bad-media/corrupt
 printf '%064d  corrupt\\n' 0 > /tmp/bad-media/source.sha256
-if magnet-linux install --root /mnt --media /tmp/bad-media --profile {args.profile} --hostname test --user browser --password-file /tmp/password --yes >/tmp/rejected 2>&1; then exit 1; fi
+if magnet-linux install --root /mnt --media /tmp/bad-media --profile {args.profile} --hostname test --root-password-file /tmp/root-password --yes >/tmp/rejected 2>&1; then exit 1; fi
 test ! -e /mnt/etc/passwd
 test ! -e /mnt/.magpkg
 {install_command}
+# User creation is explicitly separate from installation, for every profile.
+awk -F: '$3 >= 1000 && $3 != 65534 {{ exit 1 }}' /mnt/etc/passwd
+test -k /mnt/etc/perp/getty-tty1
+test -k /mnt/etc/perp/dhcpcd
+test ! -k /mnt/etc/perp/sshd
+test ! -d /mnt/etc/perp/greetd
+test -z "$(awk -F: '$1 == "wheel" {{print $4}}' /mnt/etc/group)"
+{post_install}
 if magnet-linux install --root /mnt --yes >/tmp/rejected 2>&1; then exit 1; fi
 grep -q 'already contains a system' /tmp/rejected
 test "$(cat /mnt/etc/hostname)" = magnet-installed
@@ -247,13 +270,12 @@ poweroff
             vm.script(before + '\necho MAGNET_PREPARED\n')
             vm.wait_for(b'\nMAGNET_PREPARED')
             vm.wait_for(b'magnet-live# ')
-            vm.send('magnet-linux install --root /mnt --root-password-file /tmp/root-password --ssh-key /tmp/public-key --enable-ssh || echo MAGNET_INSTALL_TEST_FAILED\n')
+            vm.send('magnet-linux install --root /mnt || echo MAGNET_INSTALL_TEST_FAILED\n')
             for prompt, answer in [
                 (b'System profile? [base] ', args.profile),
                 (b'Hostname? [magnet] ', 'magnet-installed'),
-                (b'Administrator username? ', 'browser'),
-                (b'Administrator password: ', password),
-                (b'Retype password: ', password),
+                (b'Root password: ', root_password),
+                (b'Retype password: ', root_password),
                 (b'Proceed with installation? [no] ', 'yes'),
             ]:
                 vm.wait_for(prompt)
@@ -275,15 +297,25 @@ poweroff
     vm = VM(common, work / "installed-serial.log")
     try:
         vm.wait_for(b"\nMAGNET_INSTALLED_OK", timeout=600)
+        vm.send("\n")
+        vm.wait_for(b"login: ")
+        vm.send("root\n")
+        vm.wait_for(b"Password: ")
+        vm.send(root_password + "\n")
+        vm.wait_for(b"# ")
+        vm.send("stty -echo\n")
+        vm.wait_for(b"# ")
+        vm.send("test \"$(id -u)\" = 0 && printf '\\nMAGNET_ROOT_LOGIN_OK\\n'; poweroff\n")
+        vm.wait_for(b"\nMAGNET_ROOT_LOGIN_OK")
         vm.wait_exit()
     finally:
         vm.close()
     (work / "ready").touch()
-    (work / "login-user").write_text("browser\n")
+    (work / "login-user").write_text(login_user + "\n")
     (work / "graphics").write_text("virgl\n")
-    if args.profile == "hyprland":
+    if args.profile == "hyprland" and args.with_user:
         (work / "graphical-login").touch()
-    print(f"PASS: {args.media_mode} boot, {args.filesystem} installation, target guards, independent boot, installed recipes and offline package build.", flush=True)
+    print(f"PASS: {args.media_mode} boot, {args.filesystem} root-only installation, independent boot, root password login, installed recipes and offline package build.", flush=True)
     print(f"VM retained: {work}", flush=True)
 
 if __name__ == "__main__":

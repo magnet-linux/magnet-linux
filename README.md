@@ -31,12 +31,18 @@ root shell. Prepare and mount the destination, then run:
 magnet-linux install --root /mnt
 ```
 
-The installer asks for a profile, hostname, administrator and password. It
+The installer asks for a profile, hostname and root password. It
 shows the target mounts before installing prebuilt packages, configuration,
 the editable package tree, bootstrap seed, and GRUB. The destination root
 must be mounted at `/mnt`, with its FAT EFI partition at `/mnt/boot/efi`.
 Optional separate filesystems must already be mounted. Formatting remains
 manual; installation itself needs no network connection.
+
+Root is the only initial login account. Add users afterward with `useradd`
+and `passwd`, either through `chroot /mnt` before rebooting or from the root
+console. All profiles start with text login and Ethernet DHCP. A Hyprland
+installation includes the desktop packages; configure graphical login after
+adding an ordinary user, as described in `INSTALL.txt`.
 
 See [INSTALL.txt](magnet-linux/INSTALL.txt), also included on the media, for
 ext4 and Btrfs examples. `INSTALLER_PROFILES='base'` builds smaller media;
@@ -96,6 +102,7 @@ aside first; preparation does not merge or overwrite recipe changes.
 Set `WITH_FIREFOX=1` and/or `WITH_CHROMIUM=1` when creating a VM to include
 browsers. Read `credentials.txt` in the new VM directory for the private login
 details. Existing VM data stays under `magnet-linux/out/`.
+This desktop demo helper explicitly adds its `browser` user after installation.
 
 See [the installation and maintenance guide](magnet-linux/README.md) and
 [the desktop guide](magnet-linux/DESKTOP.md) for configuration and commands.
@@ -130,8 +137,9 @@ nix-shell magnet-linux/shell.nix --run \
 The installer tests boot the media, prepare a blank disk inside QEMU, and
 install with networking disabled. They then detach the media, boot the new
 system, verify mounts and accounts, and build a package from its retained
-bootstrap seed. Add `--profile hyprland --interactive` to exercise a desktop
-installation through the actual console prompts.
+bootstrap seed, and authenticate at the root console. Add `--interactive` to
+exercise the actual console prompts. `--profile hyprland --with-user` also
+tests adding an ordinary user and configuring graphical login after installation.
 
 The headless test builds packages inside the guest and verifies snapshot
 updates and recovery. The graphical test creates a fresh disk, logs in on a

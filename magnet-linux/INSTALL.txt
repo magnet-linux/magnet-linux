@@ -46,20 +46,42 @@ Use ext4 or Btrfs for those mounts and FAT for the EFI partition.
 
     magnet-linux install --root /mnt
 
-Choose an included profile (base or hyprland), hostname, administrator name
-and password. The installer shows the mounted destination before proceeding.
-The root account stays locked unless --root-password-file is supplied.
-The administrator uses doas with their own password.
+Choose an included profile (base or hyprland), hostname and root password.
+The installer shows the mounted destination before proceeding. Root is the
+only login account created; services get their own system accounts as needed.
+There is no separate administrator or ordinary user creation step.
 
 The installer writes /etc/fstab from the mounted layout, initializes /etc,
 retains the package tree and bootstrap seed, and installs GRUB at the UEFI
 fallback path. It does not change firmware variables or format any disk.
 
-The base profile enables DHCP on Ethernet. Hyprland uses NetworkManager.
-SSH is optional: supply --enable-ssh and --ssh-key PUBLIC-KEY-FILE.
+All profiles initially boot to a root text login with Ethernet DHCP.
+The Hyprland profile installs desktop packages; graphical login is configured
+separately after adding an ordinary user. SSH remains disabled initially.
 Run magnet-linux install --help for unattended installation options.
 
-3. Review and boot
+3. Optional users and desktop
+
+Additional accounts are ordinary system administration. Before rebooting:
+
+    chroot /mnt useradd -m -g users -s /bin/bash alice
+    chroot /mnt passwd alice
+
+For the Hyprland profile, configure the new user's desktop and graphical login
+from the live environment:
+
+    /mnt/etc/magnet-linux/tree/magnet-linux/setup-login.sh /mnt alice
+
+That helper also grants the desktop user doas access and switches networking
+to NetworkManager. To grant doas access alone, use setup-doas.sh /mnt alice.
+Neither is required for a root-only console system.
+
+You can also create users with useradd and passwd from the root console after
+booting. For desktop setup later, boot the installation media and mount the
+system again, then run setup-login.sh as above. SSH can be enabled after
+installing a user's public key; see the installed tree's README.md.
+
+4. Review and boot
 
 Edit files under /mnt/etc as needed. Then:
 
@@ -68,7 +90,7 @@ Edit files under /mnt/etc as needed. Then:
     poweroff
 
 Remove the installation media and boot the installed disk.
-The base profile has text logins; Hyprland has graphical login.
+Log in as root, or use graphical login if you configured it above.
 Package selection is /etc/magnet-linux/system.jsonnet. Configuration under
 /etc remains manually editable. Btrfs snapshots are optional.
 
