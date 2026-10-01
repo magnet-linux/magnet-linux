@@ -1,0 +1,45 @@
+Generated bindings are compiled directly; formatting is not needed to build.
+Retain bindgen generation and validation, without a rustfmt-only dependency.
+
+--- a/build/rust/rust_bindgen_generator.gni
++++ b/build/rust/rust_bindgen_generator.gni
+@@ -148,7 +148,6 @@
+     script = rebase_path("//build/rust/gni_impl/run_bindgen.py")
+     inputs = [
+       _bindgen_path,
+-      _rustfmt_path,
+       "//build/action_helpers.py",
+       "//build/gn_helpers.py",
+       "//build/rust/gni_impl/filter_clang_args.py",
+@@ -160,8 +159,6 @@
+     args = [
+       "--bindgen-exe",
+       rebase_path(_bindgen_path, root_build_dir),
+-      "--rustfmt-exe",
+-      rebase_path(_rustfmt_path, root_build_dir),
+       "--header",
+       rebase_path(invoker.header, root_build_dir),
+       "--depfile",
+--- a/build/rust/gni_impl/run_bindgen.py
++++ b/build/rust/gni_impl/run_bindgen.py
+@@ -39,7 +39,6 @@
+ def main():
+   parser = argparse.ArgumentParser("run_bindgen.py")
+   parser.add_argument("--bindgen-exe", help="Path to bindgen", required=True),
+-  parser.add_argument("--rustfmt-exe", help="Path to rustfmt", required=True),
+   parser.add_argument("--header",
+                       help="C header file to generate bindings for",
+                       required=True)
+@@ -123,12 +122,6 @@
+     try:
+       subprocess.check_call([args.bindgen_exe, *genargs], env=env)
+ 
+-      fmtargs = [
+-          args.output,
+-          "--config=normalize_doc_attributes=true",
+-      ]
+-      subprocess.check_call([args.rustfmt_exe, *fmtargs])
+-
+       PrependVersionLine(args.output)
+     except:
+       # Make sure we don't emit anything if bindgen failed. The other files use

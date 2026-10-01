@@ -1,0 +1,9 @@
+export PATH=/bin
+export HOME="${HOME:-/root}"
+export TERM="${TERM:-vt100}"
+export EDITOR="${EDITOR:-nano}"
+if test "$(id -u)" = 0; then
+  export MAGPKG_STORE="${MAGPKG_STORE:-/var/lib/magpkg/store}"
+fi
+umask 022
+export PERP_BASE=/etc/perp

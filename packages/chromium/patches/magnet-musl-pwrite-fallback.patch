@@ -1,0 +1,18 @@
+--- a/sandbox/linux/seccomp-bpf-helpers/baseline_policy.cc
++++ b/sandbox/linux/seccomp-bpf-helpers/baseline_policy.cc
+@@ -183,6 +183,15 @@
+     return Error(ENOSYS);
+   }
+ 
++#if BUILDFLAG(IS_LINUX) && !defined(LIBC_GLIBC)
++  // musl 1.2.6 tries pwritev2(RWF_NOAPPEND) from pwrite/pwritev. Let it
++  // fall back to the older calls, which remain subject to existing policy.
++  // In particular, software Wayland rendering writes shared-memory buffers.
++  if (sysno == __NR_pwritev2) {
++    return Error(ENOSYS);
++  }
++#endif
++
+   // pidfd_open provides a file descriptor that refers to a process, meant to
+   // replace the pid as the method of identifying processes. For now there is no
+   // reason to support this, so just pretend pidfd_open doesn't exist.

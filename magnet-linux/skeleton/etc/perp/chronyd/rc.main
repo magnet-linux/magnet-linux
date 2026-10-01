@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+test "$1" = start || exit 0
+umask 022
+install -d -m 0750 -o chrony -g chrony /var/lib/chrony
+install -d -m 0750 -o chrony -g chrony /run/chrony
+exec /bin/chronyd -d -f /etc/chrony.conf

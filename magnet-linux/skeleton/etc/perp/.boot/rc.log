@@ -1,0 +1,4 @@
+#!/bin/sh
+umask 077
+mkdir -p /var/log/perp
+exec tinylog -t -k 8 -s 100000 /var/log/perp

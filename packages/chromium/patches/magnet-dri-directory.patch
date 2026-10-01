@@ -1,0 +1,25 @@
+Use the distro driver location without requiring Mesa hardware drivers.
+
+--- a/build/config/linux/dri/BUILD.gn
++++ b/build/config/linux/dri/BUILD.gn
+@@ -2,17 +2,7 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
+-import("//build/config/linux/pkg_config.gni")
+-
+-assert(is_linux, "This file should only be referenced on Linux")
+-
+-pkg_config("dri") {
+-  packages = [ "dri" ]
+-  dri_driver_dir = exec_script(pkg_config_script,
+-                               common_pkg_config_args + pkg_config_args + [
+-                                     "--dridriverdir",
+-                                     "dri",
+-                                   ],
+-                               "string")
+-  defines = [ "DRI_DRIVER_DIR=\"$dri_driver_dir\"" ]
++# Magnet uses a root-prefix layout. GBM is available independently of DRI drivers.
++config("dri") {
++  defines = [ "DRI_DRIVER_DIR=\"/lib/dri\"" ]
+ }

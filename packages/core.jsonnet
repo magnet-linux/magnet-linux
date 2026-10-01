@@ -11,7 +11,7 @@ local build_policy = {
 local make = build_policy + {
   name: 'make',
   build: { kind: 'script', script: |||
-    tar -xzf /fetch/make-4.4.1.tar.gz
+    tar --no-same-owner -xzf /fetch/make-4.4.1.tar.gz
     cd make-4.4.1
 
     CC='gcc -static' \
@@ -41,7 +41,7 @@ local make = build_policy + {
 local musl = build_policy + {
   name: 'musl',
   build: { kind: 'script', script: |||
-    tar -xzf /fetch/musl-1.2.6.tar.gz
+    tar --no-same-owner -xzf /fetch/musl-1.2.6.tar.gz
     cd musl-1.2.6
 
     CC=gcc \
@@ -80,7 +80,7 @@ local musl_rt = build_policy + {
 local binutils = build_policy + {
   name: 'binutils',
   build: { kind: 'script', script: |||
-    tar -xzf /fetch/binutils-2.44.tar.gz
+    tar --no-same-owner -xzf /fetch/binutils-2.44.tar.gz
     cd binutils-2.44
     mkdir build
     cd build
@@ -113,14 +113,14 @@ local binutils = build_policy + {
 local gcc = build_policy + {
   name: 'gcc',
   build: { kind: 'script', script: |||
-    tar -xJf /fetch/gcc-15.1.0.tar.xz
+    tar --no-same-owner -xJf /fetch/gcc-15.1.0.tar.xz
     cd gcc-15.1.0
 
-    tar -xJf /fetch/gmp-6.3.0.tar.xz
+    tar --no-same-owner -xJf /fetch/gmp-6.3.0.tar.xz
     mv gmp-6.3.0 gmp
-    tar -xzf /fetch/mpc-1.3.1.tar.gz
+    tar --no-same-owner -xzf /fetch/mpc-1.3.1.tar.gz
     mv mpc-1.3.1 mpc
-    tar -xJf /fetch/mpfr-4.2.2.tar.xz
+    tar --no-same-owner -xJf /fetch/mpfr-4.2.2.tar.xz
     mv mpfr-4.2.2 mpfr
 
     # This package tree deliberately uses one native library directory. GCC's
@@ -186,7 +186,7 @@ local toolchain = [bootstrap, make, binutils, gcc, musl];
 local coreutils = build_policy + {
   name: 'coreutils',
   build: { kind: 'script', script: |||
-    tar -xJf /fetch/coreutils-9.4.tar.xz
+    tar --no-same-owner -xJf /fetch/coreutils-9.4.tar.xz
     cd coreutils-9.4
 
     FORCE_UNSAFE_CONFIGURE=1 \
@@ -215,7 +215,7 @@ local coreutils = build_policy + {
 local gawk = build_policy + {
   name: 'gawk',
   build: { kind: 'script', script: |||
-    tar -xJf /fetch/gawk-5.3.2.tar.xz
+    tar --no-same-owner -xJf /fetch/gawk-5.3.2.tar.xz
     cd gawk-5.3.2
 
     ./configure \
@@ -244,7 +244,7 @@ local gawk = build_policy + {
 local sed = build_policy + {
   name: 'sed',
   build: { kind: 'script', script: |||
-    tar -xJf /fetch/sed-4.9.tar.xz
+    tar --no-same-owner -xJf /fetch/sed-4.9.tar.xz
     cd sed-4.9
 
     ./configure \
@@ -273,7 +273,7 @@ local stage2Tools = toolchain + [coreutils, gawk, sed];
 local findutils = build_policy + {
   name: 'findutils',
   build: { kind: 'script', script: |||
-    tar -xJf /fetch/findutils-4.10.0.tar.xz
+    tar --no-same-owner -xJf /fetch/findutils-4.10.0.tar.xz
     cd findutils-4.10.0
 
     ./configure \
@@ -301,7 +301,7 @@ local findutils = build_policy + {
 local diffutils = build_policy + {
   name: 'diffutils',
   build: { kind: 'script', script: |||
-    tar -xJf /fetch/diffutils-3.12.tar.xz
+    tar --no-same-owner -xJf /fetch/diffutils-3.12.tar.xz
     cd diffutils-3.12
 
     ./configure \
@@ -328,7 +328,7 @@ local diffutils = build_policy + {
 local pkgconfig = build_policy + {
   name: 'pkgconfig',
   build: { kind: 'script', script: |||
-    tar -xzf /fetch/pkg-config-0.29.2.tar.gz
+    tar --no-same-owner -xzf /fetch/pkg-config-0.29.2.tar.gz
     cd pkg-config-0.29.2
 
     CFLAGS='-std=gnu17 -O2 -pipe -fno-ident' \
@@ -357,7 +357,7 @@ local pkgconfig = build_policy + {
 local bash = build_policy + {
   name: 'bash',
   build: { kind: 'script', script: |||
-    tar -xzf /fetch/bash-5.2.37.tar.gz
+    tar --no-same-owner -xzf /fetch/bash-5.2.37.tar.gz
     cd bash-5.2.37
 
     CFLAGS='-std=gnu17 -O2 -pipe -fno-ident -Wno-error=implicit-function-declaration' \
@@ -388,7 +388,7 @@ local bash = build_policy + {
 local gzip = build_policy + {
   name: 'gzip',
   build: { kind: 'script', script: |||
-    tar -xJf /fetch/gzip-1.13.tar.xz
+    tar --no-same-owner -xJf /fetch/gzip-1.13.tar.xz
     cd gzip-1.13
 
     ./configure \
@@ -415,7 +415,7 @@ local gzip = build_policy + {
 local xz = build_policy + {
   name: 'xz',
   build: { kind: 'script', script: |||
-    tar -xJf /fetch/xz-5.4.6.tar.xz
+    tar --no-same-owner -xJf /fetch/xz-5.4.6.tar.xz
     cd xz-5.4.6
 
     ./configure \
@@ -447,10 +447,12 @@ local xz = build_policy + {
 local tar = build_policy + {
   name: 'tar',
   build: { kind: 'script', script: |||
-    tar -xJf /fetch/tar-1.35.tar.xz
+    tar --no-same-owner -xJf /fetch/tar-1.35.tar.xz
     cd tar-1.35
 
-    ./configure \
+    # System maintenance runs magpkg as root; configure still runs inside the
+    # isolated build sandbox. Match the explicit policy used by coreutils.
+    FORCE_UNSAFE_CONFIGURE=1 ./configure \
       --build=x86_64-linux-musl \
       --host=x86_64-linux-musl \
       --prefix=/ \
@@ -475,7 +477,7 @@ local tar = build_policy + {
 local grep = build_policy + {
   name: 'grep',
   build: { kind: 'script', script: |||
-    tar -xJf /fetch/grep-3.11.tar.xz
+    tar --no-same-owner -xJf /fetch/grep-3.11.tar.xz
     cd grep-3.11
 
     ./configure \

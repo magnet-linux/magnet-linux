@@ -1,0 +1,19 @@
+Use Linux poll() with musl as well as glibc.
+
+Without _PR_POLL_AVAILABLE, NSPR exports a poll() replacement implemented
+with select(). Firefox's media sandbox allows poll() but rejects select(),
+causing a busy loop and unbounded sandbox diagnostics during audio playback.
+musl provides poll(); retain the sandbox policy and use that implementation.
+--
+--- a/nsprpub/pr/include/md/_linux.h
++++ b/nsprpub/pr/include/md/_linux.h
+@@ -315,9 +315,7 @@
+ #endif /* __arm__ */
+ 
+ #define USE_SETJMP
+-#if (defined(__GLIBC__) && __GLIBC__ >= 2) || defined(ANDROID)
+ #define _PR_POLL_AVAILABLE
+-#endif
+ #undef _PR_USE_POLL
+ #define _PR_STAT_HAS_ONLY_ST_ATIME
+ #if defined(__alpha) || defined(__ia64__)

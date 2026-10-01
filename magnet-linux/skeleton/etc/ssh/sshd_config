@@ -1,0 +1,15 @@
+# Administrator-owned configuration. Package sync leaves this file alone.
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
+HostKey /etc/ssh/ssh_host_rsa_key
+ModuliFile /share/openssh/moduli
+PidFile /run/sshd.pid
+PermitRootLogin no
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+UsePAM no
+AuthorizedKeysFile .ssh/authorized_keys
+Subsystem sftp internal-sftp

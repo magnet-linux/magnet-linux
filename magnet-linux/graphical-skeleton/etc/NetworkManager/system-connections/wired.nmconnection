@@ -1,0 +1,14 @@
+[connection]
+id=Wired
+type=ethernet
+autoconnect=true
+multi-connect=3
+
+[ethernet]
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+addr-gen-mode=stable-privacy

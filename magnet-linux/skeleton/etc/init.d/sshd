@@ -1,0 +1,15 @@
+#!/bin/sh
+# Compatibility entry point; the foreground daemon is supervised by perp.
+set -eu
+case "${1:-start}" in
+  start)
+    perpctl -b /etc/perp A sshd
+    for _ in $(seq 1 10); do
+      if perpok -b /etc/perp sshd; then break; fi
+      sleep 1
+    done
+    exec perpctl -b /etc/perp u sshd
+    ;;
+  stop) exec perpctl -b /etc/perp d sshd;;
+  *) echo "usage: $0 {start|stop}" >&2; exit 2;;
+esac

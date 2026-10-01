@@ -1,0 +1,13 @@
+Fix the disabled-nscd stub to match the real function's parameter type.
+The 4.20.3 release uses int here, but every caller passes a service name.
+--- a/lib/nscd.h
++++ b/lib/nscd.h
+@@ -8,7 +8,7 @@
+ extern int nscd_flush_cache (const char *service);
+ #else
+ static inline int
+-nscd_flush_cache(MAYBE_UNUSED int _1)
++nscd_flush_cache(MAYBE_UNUSED const char *service)
+ {
+ 	return 0;
+ }

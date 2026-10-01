@@ -1,0 +1,34 @@
+* {
+    font-family: "DejaVu Sans", sans-serif;
+    font-size: 13px;
+    min-height: 0;
+    border: none;
+    border-radius: 0;
+}
+
+window#waybar {
+    background: #172331;
+    color: #e6edf3;
+    border-bottom: 1px solid #34465b;
+}
+
+#workspaces button {
+    min-width: 20px;
+    padding: 0 8px;
+    margin: 3px 2px;
+    border-radius: 4px;
+    color: #b3c0d0;
+    background: transparent;
+}
+
+#workspaces button.empty { color: #78899e; }
+#workspaces button.active { background: #7eb6e8; color: #10202e; }
+#workspaces button.urgent { background: #b34f5b; color: #ffffff; }
+#workspaces button:hover { background: #34465b; color: #ffffff; }
+
+#window { padding: 0 12px; }
+#clock { padding: 0 12px; }
+#pulseaudio { padding: 0 12px; }
+#pulseaudio.muted { color: #b3c0d0; }
+#network { padding: 0 12px; }
+#network.disconnected { color: #b3c0d0; }

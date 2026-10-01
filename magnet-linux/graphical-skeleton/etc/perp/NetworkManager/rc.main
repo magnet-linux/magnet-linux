@@ -1,0 +1,5 @@
+#!/bin/sh
+test "$1" = start || exit 0
+while ! test -S /run/dbus/system_bus_socket || ! test -S /run/udev/control; do sleep 1; done
+# --debug directs logs to stderr for perp's logger; keep their level at INFO.
+exec NetworkManager --no-daemon --debug --log-level=INFO

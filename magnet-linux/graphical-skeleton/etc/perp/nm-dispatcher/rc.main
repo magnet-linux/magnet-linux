@@ -1,0 +1,4 @@
+#!/bin/sh
+test "$1" = start || exit 0
+while ! test -S /run/dbus/system_bus_socket; do sleep 1; done
+exec /libexec/nm-dispatcher --persist

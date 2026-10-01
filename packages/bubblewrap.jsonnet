@@ -10,8 +10,8 @@ local build_policy = {
 local bubblewrap = build_policy + {
   name: 'bubblewrap',
   build: { kind: 'script', script: |||
-    tar -xJf /fetch/libcap-2.78.tar.xz
-    tar -xJf /fetch/bubblewrap-0.11.2.tar.xz
+    tar --no-same-owner -xJf /fetch/libcap-2.78.tar.xz
+    tar --no-same-owner -xJf /fetch/bubblewrap-0.11.2.tar.xz
 
     capdir="$PWD/libcap-2.78/libcap"
     (

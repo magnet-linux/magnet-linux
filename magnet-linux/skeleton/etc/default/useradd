@@ -1,0 +1,2 @@
+# Default login shell for new local accounts.
+SHELL=/bin/bash

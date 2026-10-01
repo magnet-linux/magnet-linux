@@ -1,0 +1,15 @@
+we don't have execinfo.h on Alpine, thus we should not wrap it either;
+it messes with __has_include(), and leads to broken builds
+
+see: https://bugzilla.mozilla.org/show_bug.cgi?id=1952657
+
+--- a/config/system-headers.mozbuild
++++ b/config/system-headers.mozbuild
+@@ -222,7 +222,6 @@
+     "exdisp.h",
+     "ExDisp.h",
+     "exe386.h",
+-    "execinfo.h",
+     "extras.h",
+     "fcntl.h",
+     "features.h",

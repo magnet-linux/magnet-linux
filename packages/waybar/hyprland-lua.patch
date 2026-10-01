@@ -1,0 +1,79 @@
+--- a/include/modules/hyprland/backend.hpp
++++ b/include/modules/hyprland/backend.hpp
+@@ -31,6 +31,8 @@
+   void unregisterForIPC(EventHandler* handler);
+ 
+   static std::string getSocket1Reply(const std::string& rq);
++  // Magnet ships Hyprland's Lua dispatcher API (0.56 and later).
++  static std::string dispatch(const std::string& dispatcher, const std::string& arg);
+   Json::Value getSocket1JsonReply(const std::string& rq);
+   static std::filesystem::path getSocketFolder(const char* instanceSig);
+ 
+--- a/src/modules/hyprland/backend.cpp
++++ b/src/modules/hyprland/backend.cpp
+@@ -243,4 +243,36 @@
+   return parser_.parse(reply);
+ }
+ 
++
++// Quote workspace names as Lua strings, including quotes and control bytes.
++static std::string luaQuote(const std::string& value) {
++  std::string result = "\"";
++  for (unsigned char c : value) {
++    if (c == '\\' || c == '"') {
++      result += '\\';
++      result += c;
++    } else if (c < 32 || c == 127) {
++      result += fmt::format("\\{:03}", static_cast<unsigned>(c));
++    } else {
++      result += c;
++    }
++  }
++  return result + '"';
++}
++
++std::string IPC::dispatch(const std::string& dispatcher, const std::string& arg) {
++  if (dispatcher == "workspace") {
++    return getSocket1Reply("/dispatch hl.dsp.focus({ workspace = " + luaQuote(arg) + " })");
++  }
++  if (dispatcher == "focusworkspaceoncurrentmonitor") {
++    return getSocket1Reply("/dispatch hl.dsp.focus({ workspace = " + luaQuote(arg) +
++                           ", monitor = \"current\" })");
++  }
++  if (dispatcher == "togglespecialworkspace") {
++    return getSocket1Reply("/dispatch hl.dsp.workspace.toggle_special(" +
++                           (arg.empty() ? "" : luaQuote(arg)) + ")");
++  }
++  throw std::runtime_error("Unsupported Hyprland dispatcher: " + dispatcher);
++}
++
+ }  // namespace waybar::modules::hyprland
+--- a/src/modules/hyprland/workspace.cpp
++++ b/src/modules/hyprland/workspace.cpp
+@@ -71,20 +71,20 @@
+     try {
+       if (id() > 0) {  // normal
+         if (m_workspaceManager.moveToMonitor()) {
+-          m_ipc.getSocket1Reply("dispatch focusworkspaceoncurrentmonitor " + std::to_string(id()));
++          IPC::dispatch("focusworkspaceoncurrentmonitor", std::to_string(id()));
+         } else {
+-          m_ipc.getSocket1Reply("dispatch workspace " + std::to_string(id()));
++          IPC::dispatch("workspace", std::to_string(id()));
+         }
+       } else if (!isSpecial()) {  // named (this includes persistent)
+         if (m_workspaceManager.moveToMonitor()) {
+-          m_ipc.getSocket1Reply("dispatch focusworkspaceoncurrentmonitor name:" + name());
++          IPC::dispatch("focusworkspaceoncurrentmonitor", "name:" + name());
+         } else {
+-          m_ipc.getSocket1Reply("dispatch workspace name:" + name());
++          IPC::dispatch("workspace", "name:" + name());
+         }
+       } else if (id() != -99) {  // named special
+-        m_ipc.getSocket1Reply("dispatch togglespecialworkspace " + name());
++        IPC::dispatch("togglespecialworkspace", name());
+       } else {  // special
+-        m_ipc.getSocket1Reply("dispatch togglespecialworkspace");
++        IPC::dispatch("togglespecialworkspace", "");
+       }
+       return true;
+     } catch (const std::exception& e) {

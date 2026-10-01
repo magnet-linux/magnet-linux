@@ -1,0 +1,29 @@
+--- a/gtkgreet/window.c
++++ b/gtkgreet/window.c
+@@ -112,7 +112,8 @@
+ 
+     gtk_container_add(GTK_CONTAINER(ctx->input_box), question_box);
+ 
+-    if (type == QuestionTypeInitial) {
++    /* An explicit command selects a fixed session, without an editable chooser. */
++    if (type == QuestionTypeInitial && gtkgreet->command == NULL) {
+         ctx->command_selector = gtk_combo_box_text_new_with_entry();
+         gtk_widget_set_name(ctx->command_selector, "command-selector");
+         gtk_widget_set_size_request(ctx->command_selector, 384, -1);
+--- a/gtkgreet/actions.c
++++ b/gtkgreet/actions.c
+@@ -71,7 +71,13 @@
+                 free(gtkgreet->selected_command);
+                 gtkgreet->selected_command = NULL;
+             }
+-            gtkgreet->selected_command = strdup(gtk_combo_box_text_get_active_text((GtkComboBoxText*)ctx->command_selector));
++            if (gtkgreet->command != NULL) {
++                gtkgreet->selected_command = strdup(gtkgreet->command);
++            } else {
++                char *text = gtk_combo_box_text_get_active_text((GtkComboBoxText*)ctx->command_selector);
++                gtkgreet->selected_command = strdup(text ? text : "");
++                g_free(text);
++            }
+ 
+             struct request req = {
+                 .request_type = request_type_create_session,

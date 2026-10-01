@@ -1,0 +1,23 @@
+The distro Rust toolchain does not include the optional profiling runtime.
+Chromium is built without coverage or PGO.
+
+--- a/build/rust/std/BUILD.gn
++++ b/build/rust/std/BUILD.gn
+@@ -74,7 +74,6 @@
+   # don't need to pass to the C++ linker because they're used for specialized
+   # purposes.
+   skip_stdlib_files = [
+-    "profiler_builtins",
+     "rustc_std_workspace_alloc",
+     "rustc_std_workspace_core",
+     "rustc_std_workspace_std",
+@@ -190,8 +189,7 @@
+     profiler_builtins_crates = [
+       "core",
+       "compiler_builtins",
+-      "profiler_builtins",
+-    ]
++      ]
+ 
+     # When using instrumentation, profiler_builtins and its deps must be built
+     # before other std crates. Other crates depend on this target so they are

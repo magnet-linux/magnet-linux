@@ -1,0 +1,11 @@
+Include libc IPv6 types before Linux UAPI definitions on musl.
+--- a/include/bridge.h
++++ b/include/bridge.h
+@@ -2,6 +2,7 @@
+ #ifndef __BRIDGE_H__
+ #define __BRIDGE_H__ 1
+ 
++#include <netinet/in.h>
+ #include <linux/if_bridge.h>
+ #include <linux/rtnetlink.h>
+ 

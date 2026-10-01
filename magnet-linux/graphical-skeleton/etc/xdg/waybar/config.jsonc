@@ -1,0 +1,44 @@
+{
+    "layer": "top",
+    "position": "top",
+    "height": 32,
+    "spacing": 8,
+    "modules-left": ["hyprland/workspaces"],
+    "modules-center": ["hyprland/window"],
+    "modules-right": ["network", "pulseaudio", "clock"],
+    "network": {
+        "format-ethernet": "Ethernet",
+        "format-wifi": "Wi-Fi {essid} {signalStrength}%",
+        "format-linked": "Network: no IP",
+        "format-disconnected": "Offline",
+        "tooltip-format": "{ifname}: {ipaddr}/{cidr}\nClick to manage connections",
+        "tooltip-format-disconnected": "Click to manage connections",
+        "on-click": "foot --app-id=magnet-network --title=Network nmtui"
+    },
+    "pulseaudio": {
+        "format": "Vol {volume}%",
+        "format-muted": "Muted",
+        "tooltip-format": "{desc}",
+        "scroll-step": 5,
+        "max-volume": 100,
+        "on-click": "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
+    },
+    "hyprland/workspaces": {
+        "format": "{name}",
+        "persistent-workspaces": { "*": [1, 2, 3, 4, 5, 6, 7, 8, 9] },
+        "sort-by-number": true,
+        "all-outputs": false
+    },
+    "hyprland/window": {
+        "format": "{}",
+        "max-length": 60,
+        "separate-outputs": true,
+        "icon": false
+    },
+    "clock": {
+        "locale": "C",
+        "format": "{:%a %d %b  %H:%M %Z}",
+        "tooltip-format": "{:%A, %d %B %Y}",
+        "interval": 10
+    }
+}

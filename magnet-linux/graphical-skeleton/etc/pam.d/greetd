@@ -1,0 +1,7 @@
+# Local accounts and /etc/shadow remain the source of login credentials.
+# nullok preserves the optional passwordless local console policy.
+auth required pam_unix.so nullok
+account required pam_unix.so
+password required pam_unix.so sha512
+session required pam_unix.so
+session required pam_limits.so

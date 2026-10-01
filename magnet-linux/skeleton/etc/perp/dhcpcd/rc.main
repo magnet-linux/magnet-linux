@@ -1,0 +1,7 @@
+#!/bin/sh
+test "$1" = start || exit 0
+umask 022
+install -d -m 0755 -o 0 -g 0 /var/empty /var/db
+install -d -m 1777 -o 0 -g 0 /var/empty/tmp
+install -d -m 0750 -o 0 -g 0 /var/db/dhcpcd
+exec dhcpcd --nobackground --quiet

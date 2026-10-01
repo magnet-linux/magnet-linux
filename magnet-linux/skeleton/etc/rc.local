@@ -1,0 +1,4 @@
+#!/bin/sh
+# Administrator startup commands. Networking is deliberately opt-in.
+# Enable persistently (or run these on the installed system):
+# perpctl -b /etc/perp A dhcpcd sshd

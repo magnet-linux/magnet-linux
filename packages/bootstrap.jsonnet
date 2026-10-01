@@ -14,7 +14,8 @@ local bootstrap_seed = build_policy + {
       filename: 'bootstrap.tar.zst',
       sha256: '2703bd4a9bd9fbdddb00cca71cbcced18b769e338df099c8809f28070d50316a',
       urls: [
-        'file:///home/ac/src/magnet-linux/bootstrap/out/bootstrap.tar.zst',
+        // Installed independently of the disposable source-fetch cache.
+        'file:///var/lib/magpkg/bootstrap.tar.zst',
       ],
     },
   ],

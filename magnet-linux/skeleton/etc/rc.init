@@ -1,0 +1,41 @@
+#!/bin/sh
+set -eu
+export PATH=/bin PERP_BASE=/etc/perp
+umask 022
+# The kernel mounts devtmpfs before starting sinit.
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run
+mkdir -p /dev/pts /dev/shm
+mount -t devpts -o mode=0620,gid=5 devpts /dev/pts
+mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /dev/shm
+mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /tmp
+mount -a
+# These compatibility paths must be made after mounting the persistent /var.
+mkdir -p /run/lock
+for name in run lock; do
+  if ! test -e "/var/$name" && ! test -L "/var/$name"; then
+    case "$name" in run) destination=../run;; lock) destination=../run/lock;; esac
+    ln -s "$destination" "/var/$name"
+  fi
+done
+cat /etc/hostname > /proc/sys/kernel/hostname
+ip link set lo up
+mkdir -p /run/perp /run/udev /run/user /var/log
+chmod 0700 /run/perp
+if test -f /etc/magnet-linux/desktop-users; then
+  while IFS= read -r user; do
+    case "$user" in ''|'#'*) continue;; esac
+    uid=$(id -u "$user")
+    install -d -m 0700 -o "$uid" -g "$(id -g "$user")" "/run/user/$uid"
+  done < /etc/magnet-linux/desktop-users
+fi
+perpboot /etc/perp &
+echo "$!" > /run/perpboot.pid
+for _ in $(seq 1 30); do
+  test ! -S /run/perp/perpd.sock || break
+  sleep 1
+done
+test -S /run/perp/perpd.sock
+echo 'Magnet Linux: boot complete (sinit + perp)'
+if test -x /etc/rc.local; then /etc/rc.local; fi

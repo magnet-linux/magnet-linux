@@ -1,0 +1,4 @@
+# greetd starts its dedicated, locked greeter account without a password.
+auth required pam_permit.so
+account required pam_permit.so
+session required pam_permit.so

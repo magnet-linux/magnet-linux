@@ -1,0 +1,6 @@
+#!/bin/sh
+test "$1" = start || exit 0
+umask 077
+install -d -m 0755 -o 0 -g 0 /run/sshd
+sshd -t || exit 1
+exec /bin/sshd -D -E /var/log/sshd.log

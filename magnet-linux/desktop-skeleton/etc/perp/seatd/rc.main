@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+test "$1" = start || exit 0
+# udev must enumerate and assign device permissions before a seat opens.
+while ! test -S /run/udev/control; do sleep 1; done
+udevadm trigger --type=subsystems --action=add
+udevadm trigger --type=devices --action=add
+udevadm settle
+exec seatd -g seat >> /var/log/seatd.log 2>&1

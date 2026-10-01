@@ -1,0 +1,4 @@
+#!/bin/sh
+test "$1" = start || exit 0
+test -S "$XDG_RUNTIME_DIR/pipewire-0" || exit 1
+exec wireplumber

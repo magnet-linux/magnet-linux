@@ -1,0 +1,10 @@
+#!/bin/sh
+test "$1" = start || exit 0
+umask 022
+mkdir -p /run/dbus /var/lib/dbus
+dbus-uuidgen --ensure=/etc/machine-id || exit 1
+# GLib and D-Bus must agree on the identity, including after root rollback.
+if ! test -e /var/lib/dbus/machine-id; then
+  ln -s /etc/machine-id /var/lib/dbus/machine-id
+fi
+exec dbus-daemon --system --nofork --nopidfile

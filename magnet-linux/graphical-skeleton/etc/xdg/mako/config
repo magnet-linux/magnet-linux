@@ -1,0 +1,16 @@
+font=DejaVu Sans 11
+anchor=top-right
+width=360
+margin=10
+padding=12
+border-size=2
+border-radius=5
+background-color=#20242bee
+text-color=#eeeeeeff
+border-color=#729fcfff
+default-timeout=6000
+max-visible=4
+
+[urgency=critical]
+default-timeout=0
+border-color=#ef5350ff

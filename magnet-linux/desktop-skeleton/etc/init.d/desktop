@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+case "${1:-start}" in
+  start) exec perpctl -b /etc/perp A udevd seatd;;
+  stop) exec perpctl -b /etc/perp d seatd udevd;;
+  *) echo "usage: $0 {start|stop}" >&2; exit 2;;
+esac

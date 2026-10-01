@@ -1,0 +1,15 @@
+window {
+    background-color: #172331;
+    color: #e6edf3;
+    font-family: DejaVu Sans;
+    font-size: 16px;
+}
+box#body {
+    background-color: #243447;
+    border-radius: 12px;
+    padding: 40px;
+}
+entry, button, combobox {
+    margin: 5px;
+    padding: 8px;
+}

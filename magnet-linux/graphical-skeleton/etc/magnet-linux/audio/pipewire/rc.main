@@ -1,0 +1,3 @@
+#!/bin/sh
+test "$1" = start || exit 0
+exec pipewire

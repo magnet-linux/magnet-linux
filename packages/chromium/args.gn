@@ -1,0 +1,65 @@
+# Native musl toolchain; all inputs are supplied by the package closure.
+is_debug = false
+is_official_build = true
+is_clang = true
+is_musl = true
+clang_base_path = "/usr"
+clang_version = "22"
+clang_use_chrome_plugins = false
+custom_toolchain = "//build/toolchain/linux/unbundle:default"
+host_toolchain = "//build/toolchain/linux/unbundle:default"
+use_sysroot = false
+use_lld = true
+use_clang_modules = false
+use_thin_lto = false
+is_cfi = false
+chrome_pgo_phase = 0
+symbol_level = 0
+blink_symbol_level = 0
+v8_symbol_level = 0
+treat_warnings_as_errors = false
+fatal_linker_warnings = false
+use_custom_libcxx = true
+use_safe_libstdcxx = false
+
+# Use our source-built stable Rust, including its matching standard library.
+enable_rust = true
+rust_sysroot_absolute = "/usr"
+rust_bindgen_root = "/usr"
+rustc_version = "1.97.0"
+
+# The initial desktop is Wayland with software rendering.
+use_ozone = true
+ozone_auto_platforms = false
+ozone_platform = "wayland"
+ozone_platform_wayland = true
+ozone_platform_headless = true
+ozone_platform_x11 = false
+use_gtk = true
+gtk_version = 3
+use_bundled_fontconfig = false
+# The package closure supplies matching libffi headers and runtime library.
+use_system_libffi = true
+use_qt6 = false
+use_vaapi = false
+enable_vulkan = false
+enable_swiftshader = false
+angle_enable_vulkan = false
+angle_enable_swiftshader = false
+use_dawn = false
+skia_use_dawn = false
+dawn_use_swiftshader = false
+enable_vr = false
+use_pulseaudio = false
+rtc_use_pipewire = false
+use_cups = false
+use_kerberos = false
+
+node_version_check = false
+blink_enable_generated_code_formatting = false
+enable_nocompile_tests = false
+enable_stripping = false
+disable_fieldtrial_testing_config = true
+safe_browsing_use_unrar = false
+ffmpeg_branding = "Chromium"
+proprietary_codecs = false

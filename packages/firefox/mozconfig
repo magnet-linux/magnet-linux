@@ -1,0 +1,30 @@
+# Global root-prefix installation, native Wayland desktop.
+ac_add_options --prefix=/
+ac_add_options --libdir=/lib
+ac_add_options --host=x86_64-linux-musl
+ac_add_options --target=x86_64-linux-musl
+ac_add_options --enable-application=browser
+ac_add_options --enable-default-toolkit=cairo-gtk3-wayland-only
+ac_add_options --enable-official-branding
+ac_add_options --enable-release
+ac_add_options --enable-update-channel=esr
+ac_add_options --enable-linker=lld
+ac_add_options --enable-hardening
+ac_add_options --with-libclang-path=/lib
+ac_add_options --with-wasi-sysroot=/share/wasi-sysroot
+ac_add_options --with-system-zlib
+ac_add_options --disable-bootstrap
+ac_add_options --disable-debug
+ac_add_options --disable-debug-symbols
+ac_add_options --disable-tests
+ac_add_options --disable-updater
+ac_add_options --disable-crashreporter
+ac_add_options --disable-jemalloc
+ac_add_options --disable-necko-wifi
+ac_add_options --disable-profiling
+ac_add_options --disable-cargo-incremental
+# PipeWire serves the PulseAudio client backend. Capture/WebRTC is separate.
+ac_add_options --enable-audio-backends=pulseaudio
+ac_add_options --disable-webrtc
+ac_add_options --disable-synth-speechd
+mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj

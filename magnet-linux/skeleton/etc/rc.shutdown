@@ -1,0 +1,21 @@
+#!/bin/sh
+export PATH=/bin PERP_BASE=/etc/perp
+case "${1:-}" in
+  poweroff) flag=-p;;
+  reboot) flag=-r;;
+  *) echo 'usage: rc.shutdown {poweroff|reboot}' >&2; exit 2;;
+esac
+# Multiple signals must not run concurrent shutdown sequences.
+mkdir /run/shutdown.lock 2>/dev/null || exit 0
+echo "Magnet Linux: shutting down ($1)"
+if test -r /run/perpboot.pid; then
+  supervisor=$(cat /run/perpboot.pid)
+  kill -TERM "$supervisor" 2>/dev/null || true
+  for _ in $(seq 1 15); do
+    kill -0 "$supervisor" 2>/dev/null || break
+    sleep 1
+  done
+fi
+# The Oasis helper terminates remaining processes, syncs and unmounts, then
+# performs the final kernel reboot operation. sinit gives us our own session.
+exec /libexec/magnet-shutdown "$flag"
