@@ -3,7 +3,7 @@
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 distro=$repo/magnet-linux
-for tool in go bwrap qemu-system-x86_64 btrfs mkfs.btrfs mkfs.vfat \
+for tool in python3 bwrap qemu-system-x86_64 btrfs mkfs.btrfs mkfs.vfat \
   sfdisk losetup mount umount mountpoint blkid grub-mkstandalone timeout sudo ssh ssh-keygen scp; do
   command -v "$tool" >/dev/null || { echo "missing host tool: $tool" >&2; exit 1; }
 done
@@ -14,11 +14,13 @@ sudo -n true || { echo 'The image test needs sudo for loop mounts.' >&2; exit 1;
 mkdir -p "$distro/_work" "$distro/out"
 store=${MAGPKG_STORE:-$distro/_work/store}
 store=$(realpath -m "$store")
-magpkg=$distro/_work/magpkg
-go -C "$repo/magpkg" build -o "$magpkg" ./cmd/magpkg
+python3 "$distro/prepare.py"
+magpkg=$(command -v "${MAGPKG:-$distro/_work/magpkg}")
+magpkg=$(realpath "$magpkg")
+seed=$distro/_work/bootstrap.tar.zst
 "$magpkg" init --store "$store"
 "$magpkg" build --store "$store" \
-  --ext-str "bootstrap-url=file://$repo/bootstrap/out/bootstrap.tar.zst" \
+  --ext-str "bootstrap-url=file://$seed" \
   "$distro/seed-store.jsonnet" seed
 "$magpkg" build --store "$store" --jobs 3 --parallelism "${BUILD_PARALLELISM:-8}" \
   "$distro/system.jsonnet" system
@@ -159,9 +161,9 @@ mount_target
 sync_target "$distro/system.jsonnet" install
 root_cmd "$distro/setup-root.sh" "$target" magnet-test "$root_uuid" "$esp_uuid"
 root_cmd mount -o subvol=var "$system" "$target/var"
-root_cmd "$distro/setup-tree.sh" "$target"
+root_cmd "$distro/setup-tree.sh" "$target" "$seed"
 echo original | root_cmd tee "$target/etc/magnet-linux/tree/LOCAL-NOTE" >/dev/null
-root_cmd "$distro/setup-tree.sh" "$target"
+root_cmd "$distro/setup-tree.sh" "$target" "$seed"
 test "$(cat "$target/etc/magnet-linux/tree/LOCAL-NOTE")" = original
 test ! -d "$target/var/lib/magpkg/store/packages"
 root_cmd umount "$target/var"

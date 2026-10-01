@@ -229,9 +229,9 @@ console. Defaults are 4 GiB RAM, four CPUs, and SSH on localhost port 22222.
 Override `QEMU_MEMORY`, `QEMU_CPUS`, or `SSH_PORT` as needed. A lock prevents
 launching the same disk twice.
 
-[Firefox](../packages/firefox/README.md) and
-[Chromium](../packages/chromium/README.md) install globally and share libraries
-from [browser-common](../packages/browser-common/README.md). Both currently
+[Firefox](https://github.com/magnet-linux/packages/blob/main/firefox/README.md) and
+[Chromium](https://github.com/magnet-linux/packages/blob/main/chromium/README.md) install globally and share libraries
+from [browser-common](https://github.com/magnet-linux/packages/blob/main/browser-common/README.md). Both currently
 use software rendering. Firefox uses PipeWire's PulseAudio compatibility
 server; Chromium uses its ALSA plugin. WebRTC is disabled in Firefox; GPU
 acceleration and CUPS printing are disabled in Chromium.

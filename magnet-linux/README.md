@@ -49,9 +49,11 @@ magpkg using the bootstrap seed. Without Nix, provide the commands checked by
 the test and set `OVMF_CODE` and `OVMF_VARS` to a matching pair of x86-64 OVMF
 firmware files. Secure Boot is not enabled.
 
-The bootstrap archive must already exist; see `../bootstrap/README.md`. The
-test imports it into the host's source cache with `seed-store.jsonnet`, checking
-its pinned hash, and installs a separate copy at `/var/lib/magpkg/bootstrap.tar.zst`
+The test runs `prepare.py` to download the package-tree release, static magpkg,
+and bootstrap archive pinned in the root `dependencies.json`. Git, Go and sibling
+source checkouts are not required. The seed is imported into the host source
+cache with `seed-store.jsonnet`, then installed separately at
+`/var/lib/magpkg/bootstrap.tar.zst`
 in the guest. Recipes use that installed path, with no reference to the host
 checkout. Deleting the guest's fetch cache does not delete its seed.
 
@@ -99,8 +101,7 @@ Set `BUILD_PARALLELISM` to control host compilation and `QEMU_TIMEOUT` to change
 the per-boot timeout in seconds (default 5400). The guest has four CPUs and
 8 GiB RAM by default; `QEMU_MEMORY` changes RAM in MiB. A full rebuild takes
 tens of minutes with KVM; software emulation may need a longer timeout.
-`MAGPKG_STORE` can select another host store. Do not run multiple copies of the
-test script against the same checkout at once: it shares its host CLI output path.
+`MAGPKG_STORE` can select another host store. Use separate output directories and SSH ports for concurrent test instances.
 
 If GNU's download server is unavailable, set
 `GNU_MIRROR=https://mirrors.kernel.org/gnu/` for the test. The guest downloads
@@ -143,13 +144,12 @@ repository root with the host tools above. Build packages as your ordinary
 user before doing privileged installation work:
 
 ```sh
-mkdir -p magnet-linux/_work
-go -C magpkg build -o ../magnet-linux/_work/magpkg ./cmd/magpkg
+python3 magnet-linux/prepare.py
 magpkg=$PWD/magnet-linux/_work/magpkg
 store=$PWD/magnet-linux/_work/store
 "$magpkg" init --store "$store"
 "$magpkg" build --store "$store" \
-  --ext-str "bootstrap-url=file://$PWD/bootstrap/out/bootstrap.tar.zst" \
+  --ext-str "bootstrap-url=file://$PWD/magnet-linux/_work/bootstrap.tar.zst" \
   magnet-linux/seed-store.jsonnet seed
 "$magpkg" build --store "$store" --jobs 3 --parallelism 8 \
   magnet-linux/system.jsonnet system

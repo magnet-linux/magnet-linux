@@ -3,7 +3,6 @@
 set -euo pipefail
 umask 077
 distro=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-repo=$(dirname "$distro")
 if test "$#" -gt 2 || test "${1:-}" = --help; then
   echo "usage: $0 [NEW-VM-DIRECTORY [USERNAME]]"
   echo 'Run inside nix-shell magnet-linux/shell.nix.'
@@ -36,7 +35,7 @@ fi
 selection=$distro/desktop-hyprland.jsonnet
 selected_root=$profile
 test ! -e "$vm" && test ! -L "$vm" || { echo "Destination already exists: $vm" >&2; exit 1; }
-for tool in go bwrap btrfs mkfs.btrfs mkfs.vfat sfdisk losetup mount umount \
+for tool in python3 bwrap btrfs mkfs.btrfs mkfs.vfat sfdisk losetup mount umount \
   blkid grub-mkstandalone sudo ssh-keygen; do
   command -v "$tool" >/dev/null || { echo "missing host tool: $tool" >&2; exit 1; }
 done
@@ -45,11 +44,13 @@ done
 sudo -v
 mkdir -p "$distro/_work"
 store=$(realpath -m "${MAGPKG_STORE:-$distro/_work/store}")
-magpkg=$distro/_work/magpkg
-go -C "$repo/magpkg" build -o "$magpkg" ./cmd/magpkg
+python3 "$distro/prepare.py"
+magpkg=$(command -v "${MAGPKG:-$distro/_work/magpkg}")
+magpkg=$(realpath "$magpkg")
+seed=$distro/_work/bootstrap.tar.zst
 "$magpkg" init --store "$store"
 "$magpkg" build --store "$store" \
-  --ext-str "bootstrap-url=file://$repo/bootstrap/out/bootstrap.tar.zst" \
+  --ext-str "bootstrap-url=file://$seed" \
   "$distro/seed-store.jsonnet" seed
 # Build outputs must be readable by ordinary guest accounts. Keep the private
 # umask for the image's credentials and keys, but do not pass it to builds.
@@ -105,7 +106,7 @@ root_cmd "$magpkg" sync --store "$store" --no-build --no-binary-cache \
   --dest "$target" "$selection" "$selected_root" > "$vm/install.log"
 root_cmd "$distro/setup-root.sh" "$target" magnet-desktop "$root_uuid" "$esp_uuid"
 root_cmd mount "$esp" "$target/boot/efi"
-root_cmd "$distro/setup-tree.sh" "$target"
+root_cmd "$distro/setup-tree.sh" "$target" "$seed"
 guest_home=/home/$user guest_uid=1000 guest_gid=100
 root_cmd chroot "$target" /bin/useradd -m -u 1000 -g users -s /bin/bash "$user"
 password=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')

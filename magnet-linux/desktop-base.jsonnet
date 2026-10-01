@@ -1,6 +1,6 @@
 // Shared desktop hardware, terminal and fonts, without a compositor.
 local base = (import './system.jsonnet').system;
-local linux = import '../packages/linux.jsonnet';
+local linux = import './kernel.jsonnet';
 local libs = import '../packages/desktop-libs.jsonnet';
 {
   system: base {

@@ -8,7 +8,7 @@ if test "$#" -lt 1 || test "$#" -gt 2; then
 fi
 target=$(realpath "$1")
 repo=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-default_seed=$repo/bootstrap/out/bootstrap.tar.zst
+default_seed=$repo/magnet-linux/_work/bootstrap.tar.zst
 if ! test -f "$default_seed"; then default_seed=/var/lib/magpkg/bootstrap.tar.zst; fi
 seed=${2:-$default_seed}
 seed_hash=2703bd4a9bd9fbdddb00cca71cbcced18b769e338df099c8809f28070d50316a
@@ -39,21 +39,31 @@ tree=$target/etc/magnet-linux/tree
 if ! test -e "$tree"; then
   scratch=$(mktemp -d "$target/etc/magnet-linux/.tree.XXXXXXXX")
   trap 'rm -rf "$scratch"' EXIT HUP INT TERM
-  cp -R "$repo/packages" "$scratch/packages"
+  test -f "$repo/packages/bootstrap.jsonnet" || {
+    echo 'Prepare the package tree before installing it.' >&2; exit 1;
+  }
+  mkdir "$scratch/packages"
+  # Copy source only, including local edits, without Git or build/cache state.
+  tar -C "$repo/packages" --exclude=.git --exclude=out --exclude=_work \
+    --exclude=__pycache__ --exclude='*.pyc' -cf "$scratch/.packages.tar" .
+  tar -xf "$scratch/.packages.tar" -C "$scratch/packages"
+  rm "$scratch/.packages.tar"
+  cp "$repo/dependencies.json" "$scratch/dependencies.json"
   mkdir "$scratch/magnet-linux"
   cp "$repo"/magnet-linux/*.sh "$repo"/magnet-linux/*.jsonnet \
-    "$repo"/magnet-linux/*.config "$repo"/magnet-linux/*.md "$scratch/magnet-linux/"
+    "$repo"/magnet-linux/*.config "$repo"/magnet-linux/*.py "$repo"/magnet-linux/*.md "$scratch/magnet-linux/"
   cp -R "$repo/magnet-linux/skeleton" "$scratch/magnet-linux/skeleton"
   cp -R "$repo/magnet-linux/desktop-skeleton" "$scratch/magnet-linux/desktop-skeleton"
   cp -R "$repo/magnet-linux/graphical-skeleton" "$scratch/magnet-linux/graphical-skeleton"
-  # The working tree includes local recipes which are not in the magpkg source
-  # pin. Record its base revision and the exact installed files separately.
+  # Record distro provenance and the exact installed files, including local edits.
   if command -v git >/dev/null 2>&1 && git -C "$repo" rev-parse HEAD >/dev/null 2>&1; then
     git -C "$repo" rev-parse HEAD > "$scratch/BASE-COMMIT"
+  elif test -f "$repo/RELEASE"; then
+    sed -n 's/^revision=//p' "$repo/RELEASE" > "$scratch/BASE-COMMIT"
   elif test -f "$repo/BASE-COMMIT"; then
     cp "$repo/BASE-COMMIT" "$scratch/BASE-COMMIT"
   fi
-  (cd "$scratch"; find packages magnet-linux -type f | LC_ALL=C sort | xargs sha256sum) \
+  (cd "$scratch"; find packages magnet-linux dependencies.json -type f | LC_ALL=C sort | xargs sha256sum) \
     > "$scratch/FILES.sha256"
   chmod 0755 "$scratch"
   mv "$scratch" "$tree"

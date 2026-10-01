@@ -1,5 +1,5 @@
 local base = (import '../packages/base.jsonnet').base;
-local linux = (import '../packages/linux.jsonnet').linux;
+local linux = (import './kernel.jsonnet').linux;
 local btrfs = (import '../packages/btrfs.jsonnet').btrfs;
 local openssh = (import '../packages/openssh.jsonnet').openssh;
 local magpkg = (import '../packages/magpkg.jsonnet').magpkg;

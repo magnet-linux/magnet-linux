@@ -4,9 +4,9 @@ local desktop = (import './desktop-base.jsonnet').system {
   runDeps+: [(import '../packages/hyprland/hyprland.jsonnet').hyprland,
              (import '../packages/waybar/waybar.jsonnet').waybar,
              (import '../packages/fuzzel.jsonnet').fuzzel,
-             (import '../packages/login/session.jsonnet').session,
+             (import './session.jsonnet').session,
              (import '../packages/network/network.jsonnet').networkmanager,
-             (import '../packages/notifications.jsonnet').notifications,
+             (import './notifications.jsonnet').notifications,
              (import '../packages/base/tools.jsonnet').shadow],
 };
 {

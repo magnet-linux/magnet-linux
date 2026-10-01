@@ -2,7 +2,7 @@
 { pkgs ? import <nixpkgs> {} }:
 pkgs.mkShellNoCC {
   packages = with pkgs; [
-    go bubblewrap qemu_kvm btrfs-progs dosfstools util-linux
+    bubblewrap qemu_kvm btrfs-progs dosfstools util-linux
     grub2_efi coreutils gnutar zstd bash shellcheck openssh
     scrot xdotool xorg-server python3
   ];

@@ -1,0 +1,9 @@
+# Package definitions are a pinned release input, optionally edited locally.
+/packages/
+# Keep pre-split build data local; these are no longer source dependencies.
+/bootstrap/
+/magpkg/
+/man/
+/out/
+__pycache__/
+*.py[cod]
