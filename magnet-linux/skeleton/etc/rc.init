@@ -4,6 +4,10 @@ export PATH=/bin PERP_BASE=/etc/perp
 umask 022
 # The kernel mounts devtmpfs before starting sinit.
 mount -t proc proc /proc
+ln -sfn /proc/self/fd /dev/fd
+ln -sfn fd/0 /dev/stdin
+ln -sfn fd/1 /dev/stdout
+ln -sfn fd/2 /dev/stderr
 mount -t sysfs sysfs /sys
 mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run
 mkdir -p /dev/pts /dev/shm

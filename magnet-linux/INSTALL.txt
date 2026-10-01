@@ -1,0 +1,84 @@
+Magnet Linux installation
+=========================
+
+Boot this media on an x86-64 UEFI machine with Secure Boot disabled.
+The console is a local root shell. No SSH server is enabled on the live system.
+Installation is offline; the media includes prebuilt packages and their recipes.
+
+1. Prepare the destination
+
+Use lsblk -o NAME,SIZE,MODEL,FSTYPE,MOUNTPOINTS to identify the destination.
+Partitioning and formatting are manual. The commands below are an example
+for an EMPTY QEMU DISK named /dev/vda; they erase that disk. Substitute the
+correct device on another machine.
+
+    sfdisk /dev/vda <<'PARTITIONS'
+    label: gpt
+    size=512M,type=U
+    type=L
+    PARTITIONS
+
+    mkfs.fat -F 32 /dev/vda1
+    mkfs.ext4 /dev/vda2
+    mkdir -p /mnt
+    mount /dev/vda2 /mnt
+    mkdir -p /mnt/boot/efi
+    mount /dev/vda1 /mnt/boot/efi
+
+For Btrfs, replace the ext4 formatting and root mount with:
+
+    mkfs.btrfs -O ^free-space-tree,^block-group-tree /dev/vda2
+    mkdir -p /mnt
+    mount /dev/vda2 /mnt
+    for name in root home var snapshots; do btrfs subvolume create /mnt/$name; done
+    umount /mnt
+    mount -o subvol=root /dev/vda2 /mnt
+    mkdir -p /mnt/home /mnt/var
+    mount -o subvol=home /dev/vda2 /mnt/home
+    mount -o subvol=var /dev/vda2 /mnt/var
+
+Then mount the EFI partition at /mnt/boot/efi as above. Other Btrfs subvolume
+names work too. The root filesystem can also use the Btrfs top level.
+Optional separate /home, /var and /boot filesystems must be mounted now.
+Use ext4 or Btrfs for those mounts and FAT for the EFI partition.
+
+2. Install
+
+    magnet-linux install --root /mnt
+
+Choose an included profile (base or hyprland), hostname, administrator name
+and password. The installer shows the mounted destination before proceeding.
+The root account stays locked unless --root-password-file is supplied.
+The administrator uses doas with their own password.
+
+The installer writes /etc/fstab from the mounted layout, initializes /etc,
+retains the package tree and bootstrap seed, and installs GRUB at the UEFI
+fallback path. It does not change firmware variables or format any disk.
+
+The base profile enables DHCP on Ethernet. Hyprland uses NetworkManager.
+SSH is optional: supply --enable-ssh and --ssh-key PUBLIC-KEY-FILE.
+Run magnet-linux install --help for unattended installation options.
+
+3. Review and boot
+
+Edit files under /mnt/etc as needed. Then:
+
+    sync
+    umount -R /mnt
+    poweroff
+
+Remove the installation media and boot the installed disk.
+The base profile has text logins; Hyprland has graphical login.
+Package selection is /etc/magnet-linux/system.jsonnet. Configuration under
+/etc remains manually editable. Btrfs snapshots are optional.
+
+Recovery
+--------
+
+This shell also has Btrfs, ext4 and FAT tools, GRUB, an editor and magpkg.
+Mount an existing system to inspect it or restore a Btrfs snapshot.
+The install command requires a fresh target; use magpkg for package updates.
+
+This initial media is tested with QEMU UEFI, virtio disks/networking and
+CD/USB installation media. Hardware-specific Wi-Fi/GPU firmware, encrypted
+root, legacy BIOS installation and Secure Boot are not included.

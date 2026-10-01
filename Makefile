@@ -4,4 +4,7 @@ prepare:
 test:
 	python3 -m unittest discover -s magnet-linux/tests -p 'test_*.py'
 
-.PHONY: prepare test
+installer:
+	./magnet-linux/build-installer.sh
+
+.PHONY: prepare test installer

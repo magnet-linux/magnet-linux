@@ -159,15 +159,15 @@ boot() {
 
 mount_target
 sync_target "$distro/system.jsonnet" install
-root_cmd "$distro/setup-root.sh" "$target" magnet-test "$root_uuid" "$esp_uuid"
 root_cmd mount -o subvol=var "$system" "$target/var"
+root_cmd mount -o subvol=home "$system" "$target/home"
+root_cmd "$distro/setup-root.sh" "$target" magnet-test "$root_uuid" "$esp_uuid"
 root_cmd "$distro/setup-tree.sh" "$target" "$seed"
 echo original | root_cmd tee "$target/etc/magnet-linux/tree/LOCAL-NOTE" >/dev/null
 root_cmd "$distro/setup-tree.sh" "$target" "$seed"
 test "$(cat "$target/etc/magnet-linux/tree/LOCAL-NOTE")" = original
 test ! -d "$target/var/lib/magpkg/store/packages"
 root_cmd umount "$target/var"
-root_cmd mount -o subvol=home "$system" "$target/home"
 root_cmd chroot "$target" /bin/useradd -m -u 1000 -g users -s /bin/bash alice
 # Without PAM, OpenSSH rejects locked accounts even with a valid key. Give
 # the test account a random, discarded password; password SSH remains off.

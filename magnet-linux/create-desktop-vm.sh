@@ -69,6 +69,7 @@ loop=
 root_cmd() { sudo env "PATH=$PATH" "$@"; }
 cleanup() {
   set +e
+  rm -f "$vm/.install-password" "$vm/.install-root-password"
   for path in "$target/boot/efi" "$target/var" "$target/home" "$target" "$top"; do
     if mountpoint -q "$path"; then root_cmd umount "$path"; fi
   done
@@ -89,9 +90,6 @@ esp=${loop}p1
 system=${loop}p2
 root_cmd mkfs.vfat -F 32 "$esp"
 root_cmd mkfs.btrfs -f -O ^free-space-tree,^block-group-tree "$system"
-root_uuid=$(root_cmd blkid -s UUID -o value "$system")
-root_partuuid=$(root_cmd blkid -s PARTUUID -o value "$system")
-esp_uuid=$(root_cmd blkid -s UUID -o value "$esp")
 root_cmd mount "$system" "$top"
 for subvol in root home var; do
   root_cmd btrfs subvolume create "$top/$subvol"
@@ -102,37 +100,30 @@ root_cmd mkdir -p "$target/home" "$target/var"
 root_cmd chmod 0755 "$target/home" "$target/var"
 root_cmd mount -o subvol=home "$system" "$target/home"
 root_cmd mount -o subvol=var "$system" "$target/var"
-root_cmd "$magpkg" sync --store "$store" --no-build --no-binary-cache \
-  --dest "$target" "$selection" "$selected_root" > "$vm/install.log"
-root_cmd "$distro/setup-root.sh" "$target" magnet-desktop "$root_uuid" "$esp_uuid"
+root_cmd mkdir -p "$target/boot/efi"
 root_cmd mount "$esp" "$target/boot/efi"
-root_cmd "$distro/setup-tree.sh" "$target" "$seed"
-guest_home=/home/$user guest_uid=1000 guest_gid=100
-root_cmd chroot "$target" /bin/useradd -m -u 1000 -g users -s /bin/bash "$user"
 password=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
 root_password=$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')
-printf '%s:%s\nroot:%s\n' "$user" "$password" "$root_password" |
-  root_cmd chroot "$target" /bin/chpasswd -c SHA512
+printf '%s\n' "$password" > "$vm/.install-password"
+printf '%s\n' "$root_password" > "$vm/.install-root-password"
 printf 'User: %s\nPassword: %s\nRoot password: %s\n' "$user" "$password" "$root_password" > "$vm/credentials.txt"
 unset password root_password
 printf '%s\n' "$user" > "$vm/login-user"
 ssh-keygen -q -t ed25519 -N '' -C magnet-desktop-vm -f "$vm/client-key"
-root_cmd install -d -m 0700 -o "$guest_uid" -g "$guest_gid" "$target$guest_home/.ssh"
-root_cmd install -m 0600 -o "$guest_uid" -g "$guest_gid" "$vm/client-key.pub" "$target$guest_home/.ssh/authorized_keys"
+case "$profile" in
+  desktop) install_profile=hyprland;;
+  desktop-browser) install_profile=hyprland-firefox;;
+  desktop-chromium) install_profile=hyprland-chromium;;
+  desktop-browsers) install_profile=hyprland-browsers;;
+esac
+root_cmd env "MAGPKG=$magpkg" "$distro/magnet-linux.sh" install \
+  --root "$target" --source "$distro/.." --store "$store" --bootstrap "$seed" \
+  --profile "$install_profile" --hostname magnet-desktop --user "$user" \
+  --password-file "$vm/.install-password" --root-password-file "$vm/.install-root-password" \
+  --ssh-key "$vm/client-key.pub" --enable-ssh --yes > "$vm/install.log"
+rm "$vm/.install-password" "$vm/.install-root-password"
 host_key=$(root_cmd cat "$target/etc/ssh/ssh_host_ed25519_key.pub")
 printf 'magnet-desktop-vm %s\n' "$host_key" > "$vm/known_hosts"
-root_cmd "$distro/setup-login.sh" "$target" "$user"
-printf "{ system: (import './tree/magnet-linux/desktop-hyprland.jsonnet')['%s'] }\n" "$profile" |
-  root_cmd tee "$target/etc/magnet-linux/system.jsonnet" >/dev/null
-root_cmd chmod +t "$target/etc/perp/sshd"
-root_cmd tee "$target/etc/motd" >/dev/null <<'EOF'
-Welcome to Magnet Linux.
-Log in to Hyprland on tty1's login screen. Alt+Enter opens a terminal.
-From a local text console: magnet-session hyprland.
-Use doas poweroff to shut down. Use passwd to change your password.
-EOF
-root_cmd chmod 0644 "$target/etc/motd"
-root_cmd "$distro/setup-boot.sh" "$target" "$root_uuid" "$root_partuuid"
 for path in "$target/boot/efi" "$target/var" "$target/home" "$target" "$top"; do root_cmd umount "$path"; done
 root_cmd losetup -d "$loop"
 loop=

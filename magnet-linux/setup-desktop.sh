@@ -47,7 +47,7 @@ find "$skeleton" -type f | while IFS= read -r source; do
   case "$relative" in etc/init.d/*|etc/perp/*/rc.*) mode=0755;; esac
   install -o 0 -g 0 -m "$mode" "$source" "$destination"
 done
-cp -an "$target/share/fontconfig/defaults/." "$target/etc/fonts/"
+cp -a --update=none "$target/share/fontconfig/defaults/." "$target/etc/fonts/"
 # Change only the untouched selection created by setup-tree; leave custom ones.
 selection=$target/etc/magnet-linux/system.jsonnet
 if test -f "$selection" && test "$(cat "$selection")" = "import './tree/magnet-linux/system.jsonnet'"; then

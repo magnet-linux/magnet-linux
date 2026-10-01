@@ -1,0 +1,25 @@
+export PATH=/bin
+export MAGPKG_STORE=/var/lib/magpkg/store
+export PS1='magnet-live# '
+export TERM=${TERM:-linux}
+cat <<'WELCOME'
+
+Magnet Linux installation and recovery
+------------------------------------
+This console is a local root shell. Partition and format your target disk,
+then mount its root at /mnt and its EFI partition at /mnt/boot/efi.
+Optional /home and /var filesystems must also be mounted before installation.
+
+  less /run/media/magnet/INSTALL.txt
+  lsblk -f
+  magnet-linux install --root /mnt
+
+Profiles on this media:
+WELCOME
+if test -d /run/media/magnet/profiles; then
+  for manifest in /run/media/magnet/profiles/*.sha256; do
+    name=${manifest##*/}
+    printf '  %s\n' "${name%.sha256}"
+  done
+fi
+echo

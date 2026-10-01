@@ -1,9 +1,12 @@
 # Magnet Linux
 
-A small, manually administered system assembled with magpkg. The first target
-is an x86-64 UEFI VM with a serial console, sinit and perp, and a writable Btrfs
-root. There is no deployment manager, automatic snapshot policy, or generated
-configuration system.
+A small, manually administered system assembled with magpkg. The initial target
+is x86-64 UEFI, with console installation, sinit and perp, and an ext4 or Btrfs
+root. The optional Hyprland profile provides graphical login after installation.
+
+For the ISO/USB installer, start with [INSTALL.txt](INSTALL.txt). It installs
+into already mounted filesystems and initializes ordinary editable `/etc`
+files. The Btrfs layout and snapshot workflows below are optional.
 
 `system.jsonnet` selects packages. `skeleton/` contains initial `/etc` files.
 `setup-root.sh` copies missing configuration and applies explicit permissions;
@@ -108,7 +111,7 @@ If GNU's download server is unavailable, set
 the same hash-verified source archives from that mirror; package definitions
 and identities remain unchanged.
 
-## Layout
+## Optional Btrfs layout
 
 The EFI system partition contains a standalone GRUB executable at the UEFI
 fallback path `EFI/BOOT/BOOTX64.EFI`. The Btrfs top level contains:
@@ -188,10 +191,11 @@ as_root "$magpkg" sync --store "$store" --no-build --no-binary-cache \
 root_uuid=$(as_root blkid -s UUID -o value "$system")
 root_partuuid=$(as_root blkid -s PARTUUID -o value "$system")
 esp_uuid=$(as_root blkid -s UUID -o value "$esp")
-as_root ./magnet-linux/setup-root.sh "$target" magnet "$root_uuid" "$esp_uuid"
 as_root mount -o subvol=home "$system" "$target/home"
 as_root mount -o subvol=var "$system" "$target/var"
+as_root mkdir -p "$target/boot/efi"
 as_root mount "$esp" "$target/boot/efi"
+as_root ./magnet-linux/setup-root.sh "$target" magnet "$root_uuid" "$esp_uuid"
 as_root ./magnet-linux/setup-tree.sh "$target"
 ```
 
@@ -210,8 +214,8 @@ as_root ./magnet-linux/setup-boot.sh "$target" "$root_uuid" "$root_partuuid"
 ```
 
 Review `/etc/hostname`, `/etc/fstab`, `/etc/rc.init` and `/etc/perp`, and `/etc/rc.local` inside
-the target. Networking and SSH startup are opt-in; see below. The console is
-`ttyS0` at 115200 baud. The skeleton does not configure a graphical console or
+the target. Networking and SSH startup are opt-in; see below. The serial console is
+`ttyS0` at 115200 baud, with a local text login on tty1. The skeleton does not configure a desktop or
 passwordless privilege escalation. The selected administrator can use
 `doas COMMAND` with their own password, or `doas -s` for a root shell.
 `su -` with the root password is also available.

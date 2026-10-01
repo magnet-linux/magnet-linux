@@ -23,16 +23,19 @@ done
 skeleton=$(CDPATH='' cd -- "$(dirname -- "$0")/skeleton" && pwd)
 
 # Check the administrator-owned destinations before copying or changing modes.
-for relative in etc etc/init.d etc/ssh root home var run tmp sys boot boot/efi; do
+for relative in etc etc/init.d etc/ssh root home var var/mail run tmp sys boot boot/efi; do
   test ! -L "$target/$relative" || { echo "symlink at $relative" >&2; exit 1; }
   if test -e "$target/$relative"; then
     test -d "$target/$relative" || { echo "not a directory: $relative" >&2; exit 1; }
   fi
 done
 mkdir -p "$target/etc/init.d" "$target/etc/ssh" "$target/boot/efi" "$target/run" "$target/sys" "$target/home" "$target/var"
+mkdir -p "$target/var/mail"
 
 new_serial_service=false
 test -d "$target/etc/perp/getty-ttyS0" || new_serial_service=true
+new_console_service=false
+test -d "$target/etc/perp/getty-tty1" || new_console_service=true
 new_time_service=false
 test -d "$target/etc/perp/chronyd" || new_time_service=true
 find "$skeleton" -type d | while IFS= read -r source; do
@@ -55,6 +58,7 @@ find "$skeleton" -type f | while IFS= read -r source; do
   install -o 0 -g 0 -m "$mode" "$source" "$destination"
 done
 if "$new_serial_service"; then chmod +t "$target/etc/perp/getty-ttyS0"; fi
+if "$new_console_service"; then chmod +t "$target/etc/perp/getty-tty1"; fi
 # Perp keeps locks and its control socket in tmpfs, not in the root snapshot.
 if ! test -e "$target/etc/perp/.control" && ! test -L "$target/etc/perp/.control"; then
   ln -s /run/perp "$target/etc/perp/.control"
@@ -66,13 +70,9 @@ fi
 if ! test -e "$target/etc/hostname" && ! test -L "$target/etc/hostname"; then
   printf '%s\n' "$hostname" > "$target/etc/hostname"
 fi
-if ! test -e "$target/etc/fstab" && ! test -L "$target/etc/fstab"; then
-  cat > "$target/etc/fstab" <<EOF
-# Root is mounted by the kernel using the bootloader's PARTUUID and subvol=root.
-UUID=$root_uuid /home btrfs subvol=home 0 0
-UUID=$root_uuid /var btrfs subvol=var 0 0
-UUID=$esp_uuid /boot/efi vfat umask=0077 0 0
-EOF
+"$(dirname -- "$skeleton")/setup-fstab.sh" "$target"
+if test -f "$target/share/e2fsprogs/mke2fs.conf" && ! test -e "$target/etc/mke2fs.conf"; then
+  install -m 0644 "$target/share/e2fsprogs/mke2fs.conf" "$target/etc/mke2fs.conf"
 fi
 
 # Accounts are machine state, not package contents. This also initializes SSH
